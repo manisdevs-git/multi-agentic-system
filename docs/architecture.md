@@ -58,7 +58,7 @@ flowchart LR
 | Session state | Redacted message, agent outputs, draft, reviewer flags, agents fired, refinement count. | Orchestrator, reviewer, approval gate |
 | Support record and email draft | Written only after approval. | Approval gate |
 
-Agents do not scrape Groww, call a model for facts outside these files, or fetch new scheme pages.
+Agents do not scrape Groww or fetch new scheme pages. The model inside a node may return an id from that node's allowed list. The fact text, the citation, the count, and the signal come from the files above.
 
 ## Parallel fan-out
 
@@ -82,12 +82,53 @@ flowchart TB
 
 The orchestrator must issue the three starts before it reads any result. Reading Facts before starting Pattern would break the parallel rule. It is the first component allowed to see `FactsResult`, `PatternResult`, and `ComplianceResult` together, and the reviewer is the next step only after that merge.
 
+## LangGraph
+
+The orchestrator is one LangGraph `StateGraph`. Facts, Pattern, and Compliance are nodes of that graph. Ingress, the draft, and the reviewer are nodes too. The three agent nodes are the ones that call a model.
+
+Graph state holds `redacted_text`, `pii_types`, and the three result channels. An agent node reads `redacted_text`. Compliance also reads `pii_types`. The node writes only its own channel.
+
+```mermaid
+flowchart TB
+  ingress[Ingress]
+  facts[Facts node]
+  pattern[Pattern node]
+  compliance[Compliance node]
+  draft[Draft]
+  reviewer[Reviewer]
+  rewrite[Rewrite]
+
+  ingress --> facts
+  ingress --> pattern
+  ingress --> compliance
+  facts --> draft
+  pattern --> draft
+  compliance --> draft
+  draft --> reviewer
+  reviewer -->|fail once| rewrite
+  rewrite --> reviewer
+```
+
+Each agent node is itself a small graph. Its first step calls the model. The later steps are code, and those steps are what the JSON contracts check.
+
+| Node | Model returns | Code then does |
+|---|---|---|
+| Facts | One `scheme_id` and one section title, or neither | Copies `fact` from that `text_block`, sets `citation` to that file's `source_url`, and sets `last_checked` to `nav_date`. A missing match returns `not_covered`. |
+| Pattern | One `theme_id` from `allThemes` | Counts that theme's review dates and sets `one-off`, `rising`, or `recurring`. |
+| Compliance | `advice`, `performance_claim`, or neither | Rescans for PII, merges `pii_types`, and sets `advice_refusal` when either model flag is present. |
+
+The model sees the redacted complaint and the allowed ids for its node. It does not see another agent's result or the draft.
+
+The configured model is Groq (`GROQ_API_KEY`, optional `GROQ_MODEL`). With no key, or when the Groq call fails, the same node runs the cue tables and returns the same contract. The acceptance run uses that path and does not open a network connection.
+
+A reviewer failure follows the rewrite edge. That edge does not re-enter Facts, Pattern, or Compliance. A human refinement re-enters only the node the pushback names.
+
 ## Walkthrough: exit load on HDFC Large Cap
 
 Complaint: *"Why was I charged an exit load on HDFC Large Cap Fund?"*
 
 1. The **orchestrator** receives the complaint and calls ingress. Ingress finds no PII.
-2. The orchestrator starts **Facts**, **Pattern**, and **Compliance** together, each with the same redacted text. Facts matches `large_cap`, section `Exit load`, and returns *"Exit load of 1% if redeemed within 1 year"* with `https://groww.in/mutual-funds/hdfc-large-cap-fund-direct-growth` and last-checked `25-Jun-2026`. Pattern matches `fees_brokerage` (136 reviews, avg rating 2.2) over 2026-04-12 to 2026-07-04 and labels it recurring or rising from the date split below. Compliance finds no advice request, no return claim, and no PII. All three results come back to the orchestrator.
+2. The graph starts the **Facts**, **Pattern**, and **Compliance** nodes together, each with the same redacted text. The Facts model returns `large_cap` and `Exit load`. Code copies *"Exit load of 1% if redeemed within 1 year"* with `https://groww.in/mutual-funds/hdfc-large-cap-fund-direct-growth` and last-checked `25-Jun-2026`. The Pattern model returns `fees_brokerage`. Code counts 136 reviews (avg rating 2.2) over 2026-04-12 to 2026-07-04 and labels the signal recurring or rising from the date split below. The Compliance model returns no advice and no performance flag, and the PII scan is empty. All three results come back on the graph state.
 3. The **orchestrator** writes at most three sentences stating the cited exit-load rule and the last-checked date, plus a routing note to the fees team. If the pattern signal is recurring or rising, the note says the ticket stays open because the same issue is already showing up across reviews. It does not close the ticket just because the fact was easy.
 4. The orchestrator **sends that draft to the reviewer**. The reviewer checks citation, advice, PII, and length. On pass, the human sees the draft and the routing note.
 5. **Approve** appends a redacted record and creates an email draft. Nothing is sent.
@@ -117,7 +158,9 @@ Ingress also returns the list of token types found (`pii_types`), with no raw va
 
 **Reads:** the redacted complaint and `data/parsed/` only.
 
-**Does:** pick at most one of the five schemes, then the section that answers the question.
+**Model:** one call. It returns at most one of the five `scheme_id` values and one of the seven section titles. An id outside those lists is no match.
+
+**Code:** load the chosen section and copy it. The model does not write `fact`, `citation`, or `last_checked`.
 
 | `scheme_id` | Name cues | Exit load in corpus |
 |---|---|---|
@@ -139,7 +182,9 @@ NAV, expense ratio, exit load, stamp duty, and the tax rule in the corpus are ci
 
 **Reads:** the redacted complaint, `data/analyzed_themes.json`, and review `date`s from `data/normalized_reviews.json` for the matched theme's `reviewIds`.
 
-**Does:** assign one theme from `allThemes`, not only `topThemes`. An exit-load or brokerage complaint maps to `fees_brokerage` even though that theme is outside `topThemes`.
+**Model:** one call. It returns one `theme_id` from `allThemes`, not only `topThemes`. An exit-load or brokerage complaint maps to `fees_brokerage` even though that theme is outside `topThemes`. An unknown id is `other`.
+
+**Code:** load that theme, count its review dates, and set the signal. The model does not write `count`, `recent_count`, or `signal`.
 
 | `id` | Name | Count | Avg rating | In `topThemes` |
 |---|---|---:|---:|---|
@@ -168,6 +213,10 @@ The agent returns the theme `id`, `count` (full window), `recent_count`, `signal
 ### Compliance Agent
 
 **Reads:** the redacted complaint and the ingress `pii_types` list. It does not read the other agents and it does not see the draft.
+
+**Model:** one call on the redacted complaint. It returns `advice`, `performance_claim`, or neither. It does not redact, and it does not receive a raw PAN, Aadhaar, account number, phone, email, or OTP.
+
+**Code:** rescan the redacted text for PII ingress missed, merge `pii_types`, and set `advice_refusal` when `advice` or `performance_claim` is present.
 
 **Flags on the input:**
 
@@ -425,19 +474,22 @@ sequenceDiagram
   Ingress-->>Orch: redacted_text + pii_types
   Note over Ingress,Orch: Raw values are dropped here.<br/>The orchestrator fans out only the redacted text.
 
-  par Facts, Pattern, and Compliance
+  par Facts, Pattern, and Compliance nodes
     Orch->>Facts: redacted_text
-    Facts->>Corpus: Match scheme_id and section
-    Corpus-->>Facts: text_block, source_url, nav_date
+    Facts->>Facts: Model returns scheme_id and section title
+    Facts->>Corpus: Copy that text_block
+    Corpus-->>Facts: text, source_url, nav_date
     Facts-->>Orch: FactsResult (covered or not_covered + searched)
   and
     Orch->>Pattern: redacted_text
-    Pattern->>Themes: Match allThemes, read review dates for reviewIds
-    Themes-->>Pattern: theme_id, count, recent_count
+    Pattern->>Pattern: Model returns theme_id
+    Pattern->>Themes: Count review dates for that theme's reviewIds
+    Themes-->>Pattern: count, recent_count
     Pattern-->>Orch: PatternResult (one-off / recurring / rising, window)
   and
     Orch->>Compliance: redacted_text + pii_types
-    Compliance->>Compliance: Scan for advice, performance claim, PII
+    Compliance->>Compliance: Model returns advice and performance flags
+    Compliance->>Compliance: Code rescans PII and sets advice_refusal
     Compliance-->>Orch: ComplianceResult (flags, advice_refusal)
   end
 
@@ -495,7 +547,7 @@ sequenceDiagram
 
 Reading notes:
 
-- The orchestrator is the only caller of the three agents and of the reviewer. Ingress does not dispatch work.
+- The LangGraph is the only caller of the three agent nodes and of the reviewer. Ingress does not dispatch work. Each agent node calls its own model, then code fills the contract.
 - Steps inside `par` are concurrent. The demo trace must show the orchestrator starting Facts, Pattern, and Compliance before any of them returns, and calling the reviewer only after all three results are in.
 - The reviewer's rework goes back to the orchestrator only. The orchestrator rewrites the draft and does not start the three agents again.
 - A reviewer rework inside a refinement round does not count as one of the five human refinements.
@@ -521,7 +573,7 @@ Ask whether to redeem, whether a scheme is good, and what returns to expect. The
 | 20 real complaints from `normalized_reviews.json` | Each complaint runs the full fan-out. The run fails if any agent omits its JSON result, or if a reply states a fact without a `source_url` and without `not_covered`. |
 | Four branches | The table above. The run log stores `agents_fired` and the reviewer result for each. |
 | Advice resistance | `advice_refusal` is session-sticky. Orchestrator disposition `refuse` cannot be overwritten by a covered fact. |
-| Parallel agents | The demo trace shows the orchestrator starting Facts, Pattern, and Compliance before any of them has returned, then calling the reviewer only after the merge. |
+| Parallel agents | The LangGraph trace shows the Facts, Pattern, and Compliance nodes started before any of them has returned, then the reviewer node only after the merge. |
 | One reviewer round, five refinements | Enforced in session state, not by prompt wording. |
 | Approval gate | Append and email-draft creation are unreachable unless reviewer status is `pass` and the human approved. |
 
@@ -531,4 +583,5 @@ Ask whether to redeem, whether a scheme is good, and what returns to expect. The
 - Adding schemes beyond the five parsed files.
 - Re-fetching Groww pages. `fetched_at` on the corpus is 2026-06-28; last-checked stays `nav_date`.
 - Letting one model answer facts, pattern, and compliance in a single call.
+- Letting the model write the fact sentence, the review count, the signal, or the reply. Those fields are filled by the code step inside the node.
 - Storing raw PII long enough to "redact later" in a downstream log.

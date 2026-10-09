@@ -18,6 +18,8 @@ A support agent answering *"why was I charged an exit load"* needs three things 
 
 A single model asked to do all three does the first and forgets the rest. It writes a fluent, uncited paragraph ending in *"you may want to consider staying invested longer"*, which is advice. That turns a support ticket into a compliance problem.
 
+Each specialist still gets its own model call. The model only classifies. Facts code copies the sentence from the scheme file, Pattern code counts the reviews, and Compliance code redacts PII. The three calls are three nodes on one LangGraph, started together.
+
 ## Input
 
 The raw Play Store CSV is no longer in the repo. `data/` now holds the Milestone 1 corpus and the Milestone 2 review analysis. Agents read these files; they do not scrape or fall back on general knowledge.
@@ -66,13 +68,15 @@ Each theme has `id`, `name`, `description`, `reviewIds`, `count`, `avgRating`, `
 
 ### Three agents, in parallel
 
-None of them waits on or reads another's output.
+Facts, Pattern, and Compliance are nodes of one LangGraph. None of them waits on or reads another's output. The graph starts all three after redaction and waits until all three have written their result.
 
-| Agent | Responsibility | Output |
+Each node calls a model with the redacted complaint and a closed list. The model returns an id or a flag. Code in that same node writes the JSON output. The model does not see another node's result, the draft, or a raw PAN, phone, or email.
+
+| Agent | Model returns | Code writes |
 |---|---|---|
-| **Facts Agent** | Retrieves the answer from `data/parsed/` (the five scheme files). Does **not** fall back on general knowledge. | Answer with **one citation link** (`source_url`). If the corpus doesn't cover it, returns `"not covered"` and names which schemes and sections it searched. |
-| **Pattern Agent** | Checks the complaint against `allThemes` in `data/analyzed_themes.json`. | Whether the issue is **recurring**, **rising**, or a **one-off**, plus the theme `id`, the **count** of `reviewIds` behind it, and the **window** (2026-04-12 to 2026-07-04). |
-| **Compliance Agent** | Scans the incoming message **and** the outgoing draft for advice language, performance/return claims, and PII. | Flags and **redacts** PAN, Aadhaar, account numbers, phone numbers, emails, and OTPs **before anything is stored**. |
+| **Facts Agent** | One `scheme_id` and one section title from the five scheme files, or neither. | The answer copied from that `text_block`, with **one citation link** (`source_url`). If either pick is missing, `"not covered"` and the schemes and sections searched. |
+| **Pattern Agent** | One `theme_id` from `allThemes` in `data/analyzed_themes.json`. | Whether the issue is **recurring**, **rising**, or a **one-off**, plus the theme `id`, the **count** of `reviewIds` behind it, and the **window** (2026-04-12 to 2026-07-04). |
+| **Compliance Agent** | `advice`, `performance_claim`, or neither, from the incoming message. | Those flags, plus a PII flag when the redaction scan finds one. PAN, Aadhaar, account numbers, phone numbers, emails, and OTPs are redacted **before anything is stored**. The outgoing draft is checked by the reviewer, because the draft does not exist yet at this step. |
 
 ### Orchestrator
 
@@ -121,6 +125,7 @@ Same gate as Milestone 2. Nothing moves without a human clicking **approve**. Af
 5. **Three agents run in parallel**, shown in the diagram and the demo.
 6. **Reviewer rework capped at one round; refinement capped at five.**
 7. **Reply drafts are three sentences or fewer**, with a "last checked" date.
+8. **One model call per agent node.** The call returns an id or a flag from that node's list. It does not write the fact sentence, the review count, the signal, or the reply.
 
 ## Before Submitting (Acceptance Checks)
 
