@@ -7,7 +7,10 @@ import pytest
 
 from support_reply.llm import (
     DEFAULT_GROQ_MODEL,
+    GROQ_MAX_COMPLETION_TOKENS,
+    GROQ_REASONING_EFFORT,
     GroqClassifier,
+    _apply_env_lines,
     classify_or_none,
     default_classifier,
     instructions,
@@ -70,6 +73,8 @@ def test_groq_sends_the_redacted_complaint_and_asks_for_json():
     sent = client.completions.kwargs
     assert sent["model"] == DEFAULT_GROQ_MODEL
     assert sent["temperature"] == 0
+    assert sent["max_completion_tokens"] == GROQ_MAX_COMPLETION_TOKENS
+    assert sent["reasoning_effort"] == GROQ_REASONING_EFFORT
     assert sent["response_format"] == {"type": "json_object"}
     assert sent["messages"][1] == {"role": "user", "content": complaint}
     system = sent["messages"][0]["content"]
@@ -79,6 +84,43 @@ def test_groq_sends_the_redacted_complaint_and_asks_for_json():
     assert complaint not in system
     assert "test-key" not in system
     assert "test-key" not in sent["messages"][1]["content"]
+
+
+def test_groq_omits_reasoning_effort_for_a_model_that_does_not_support_it():
+    client = _Client('{"theme_id": "other"}')
+    classifier = GroqClassifier(
+        api_key="test-key", model="llama-3.3-70b-versatile", client=client
+    )
+
+    classifier.classify(
+        task="pattern",
+        redacted_text="the app is slow",
+        allowed={"theme_id": ("reliability", "other")},
+    )
+
+    sent = client.completions.kwargs
+    assert sent["max_completion_tokens"] == GROQ_MAX_COMPLETION_TOKENS
+    assert "reasoning_effort" not in sent
+
+
+def test_env_lines_fill_missing_keys_and_skip_blanks():
+    env = {"GROQ_MODEL": "already-set"}
+
+    _apply_env_lines(
+        [
+            "# comment",
+            "GROQ_API_KEY=",
+            "GEMINI_API_KEY=from-file",
+            'export GEMINI_MODEL="gemini-2.5-pro"',
+            "GROQ_MODEL=openai/gpt-oss-20b",
+        ],
+        env,
+    )
+
+    assert "GROQ_API_KEY" not in env
+    assert env["GEMINI_API_KEY"] == "from-file"
+    assert env["GEMINI_MODEL"] == "gemini-2.5-pro"
+    assert env["GROQ_MODEL"] == "already-set"
 
 
 def test_groq_rejects_a_message_that_is_not_json():

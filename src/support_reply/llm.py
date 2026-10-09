@@ -1,8 +1,12 @@
 """Classifiers for the Facts, Pattern, Compliance, and reviewer nodes.
 
 Groq is used for the three agent nodes when `GROQ_API_KEY` is set. `GROQ_MODEL`
-overrides the model name. Gemini is used for the reviewer's advice and
-performance scan when `GEMINI_API_KEY` is set; `GEMINI_MODEL` overrides it.
+overrides the model name. Each Groq call asks for `reasoning_effort=low` on the
+gpt-oss models and caps the completion at 128 tokens, so the three calls started
+together stay inside the free-tier 8,000 tokens per minute. Gemini is used for
+the reviewer's advice and performance scan when `GEMINI_API_KEY` is set;
+`GEMINI_MODEL` overrides it. Keys are read from the environment, then from a
+repo `.env` (see `.env.example`) for any name that is still unset.
 With no key, or when a call fails, `classify_or_none` returns None and the
 node uses its cue table or code checks.
 
@@ -17,7 +21,8 @@ import json
 import logging
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, MutableMapping, Sequence
+from pathlib import Path
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
@@ -30,6 +35,20 @@ TASK_REVIEW = "review"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 _TIMEOUT_SECONDS = 20.0
+# Free tier for gpt-oss is 8_000 tokens per minute, prompt plus completion,
+# and reasoning tokens count. Facts, Pattern, and Compliance each make one
+# call, and the graph starts the three together. The JSON answer is a few
+# dozen tokens, so the completion cap stays at the short-answer floor and
+# reasoning effort stays low.
+GROQ_MAX_COMPLETION_TOKENS = 128
+GROQ_REASONING_EFFORT = "low"
+_LOW_REASONING_MODELS = frozenset(
+    {
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+    }
+)
 
 _COMPLAINT_PREAMBLE = (
     "You classify one redacted support complaint. "
@@ -137,11 +156,7 @@ class GroqClassifier:
                 {"role": "system", "content": system},
                 {"role": "user", "content": redacted_text},
             ],
-            temperature=0,
-            seed=0,
-            max_completion_tokens=256,
-            response_format={"type": "json_object"},
-            timeout=_TIMEOUT_SECONDS,
+            **_groq_limits(self.model),
         )
         try:
             content = completion.choices[0].message.content
@@ -196,6 +211,48 @@ class GeminiClassifier:
         if not isinstance(content, str) or not content.strip():
             raise ValueError("model response is empty")
         return parse_json_object(content)
+
+
+def _groq_limits(model: str) -> dict[str, Any]:
+    """Completion budget for one Groq call under the 8_000 token minute cap."""
+    limits: dict[str, Any] = {
+        "temperature": 0,
+        "seed": 0,
+        "max_completion_tokens": GROQ_MAX_COMPLETION_TOKENS,
+        "response_format": {"type": "json_object"},
+        "timeout": _TIMEOUT_SECONDS,
+    }
+    if model in _LOW_REASONING_MODELS:
+        limits["reasoning_effort"] = GROQ_REASONING_EFFORT
+    return limits
+
+
+def _apply_env_lines(lines: Iterable[str], env: MutableMapping[str, str]) -> None:
+    """Fill blank keys from `.env` lines. Existing values and blanks stay put."""
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export ") :].strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if key and value and key not in env:
+            env[key] = value
+
+
+def _load_project_env() -> None:
+    """Load the repo `.env` once. A value already in the environment wins."""
+    for directory in Path(__file__).resolve().parents:
+        if not (directory / "pyproject.toml").is_file():
+            continue
+        env_file = directory / ".env"
+        if env_file.is_file():
+            _apply_env_lines(env_file.read_text(encoding="utf-8").splitlines(), os.environ)
+        return
 
 
 def default_classifier() -> GroqClassifier | None:
@@ -253,6 +310,9 @@ def classify_or_none(
         )
         return None
     return payload
+
+
+_load_project_env()
 
 
 def instructions(
