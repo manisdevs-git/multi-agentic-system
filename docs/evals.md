@@ -79,4 +79,4 @@ A case fails on the first miss. The report lists `id`, check name, expected, got
 
 - Not the 20-review acceptance sample (`support_reply.accept`).
 - Not a live DeepInfra quality board. Add a separate tagged run if you want model drift.
-- Not a license to auto-send mail. Approve is still file-only. Preview → Send is `tests/test_mail.py` / `tests/test_mcp.py` and the Streamlit desk.
+- Not a license to auto-send mail. Approve is still file-only. Preview → Send is `tests/test_mail.py`, `tests/test_api.py`, and the Vercel desk talking to Railway.

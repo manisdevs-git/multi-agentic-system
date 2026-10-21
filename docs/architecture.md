@@ -2,7 +2,9 @@
 
 This document turns `docs/problemStatement.md` into a buildable design. It names each component, what it may read, the structured outputs it must return, and how a complaint moves from input to an approval-gated mail send.
 
-The system drafts a support reply for a Groww user question. It does not give investment advice or answer from anything outside `data/`. **Approve does not send.** After Approve, the Streamlit desk opens **Preview mail**; **Send** is a second click that calls the local MCP Gmail/Docs tools.
+The system drafts a support reply for a Groww user question. It does not give investment advice or answer from anything outside `data/`. **Approve does not send.** After Approve, the web desk opens **Preview mail**; **Send** is a second click that calls MCP Gmail/Docs tools.
+
+**Deploy split:** the React UI (`frontend/`) is the Vercel front end. FastAPI (`support_reply.api`) is the Railway back end. The graph, corpus, `out/`, and MCP never run in the browser.
 
 ## Constraints that shape the design
 
@@ -29,7 +31,8 @@ flowchart LR
   Pattern[Pattern Agent]
   Compliance[Compliance Agent]
   Reviewer[Reviewer]
-  Desk[Streamlit desk]
+  Desk[Vercel frontend]
+  API[Railway FastAPI]
   Gate[Approval gate]
   Preview[Mail preview]
   MCP[MCP send_email / reflect_content]
@@ -37,7 +40,8 @@ flowchart LR
   DraftFile[Local email draft file]
 
   UserMsg --> Desk
-  Desk --> Orch
+  Desk -->|HTTPS /v1| API
+  API --> Orch
   Orch -->|1. redact| Ingress
   Orch -->|2. start together| Facts
   Orch -->|2. start together| Pattern
@@ -46,7 +50,8 @@ flowchart LR
   Pattern -->|result| Orch
   Compliance -->|result| Orch
   Orch -->|3. draft| Reviewer
-  Reviewer -->|pass| Desk
+  Reviewer -->|pass| API
+  API --> Desk
   Reviewer -->|fail once| Orch
   Human -->|refine, max 5| Orch
   Human -->|Approve| Gate
@@ -62,9 +67,9 @@ flowchart LR
 | `data/parsed/*.json` plus `parse_manifest.json` | Milestone 1 corpus. Five HDFC schemes, seven sections each. `source_url` is the only legal citation. | Facts Agent |
 | `data/analyzed_themes.json` | Milestone 2 themes: `allThemes` and `topThemes`. | Pattern Agent |
 | `data/normalized_reviews.json` | 1,650 reviews, 2026-04-12 to 2026-07-04. Used to count a theme inside a time slice. | Pattern Agent |
-| Session state | Redacted message, agent outputs, draft, reviewer flags, agents fired, refinement count. | Orchestrator, reviewer, approval gate, desk |
-| `out/records.jsonl` and `out/email_drafts/` | Written only after Approve. | Approval gate |
-| Mail preview / MCP | Shown after Approve. Send uses `send_email` and optional `reflect_content`. | `mail.py` via Streamlit |
+| Session state | Redacted message, agent outputs, draft, reviewer flags, agents fired, refinement count. Held in Railway memory keyed by `session_id`. | Orchestrator, reviewer, approval gate, API |
+| `out/records.jsonl` and `out/email_drafts/` | Written only after Approve, on the API host. | Approval gate |
+| Mail preview / MCP | Shown after Approve. Send uses `send_email` and optional `reflect_content`. | `mail.py` via FastAPI |
 
 Agents do not scrape Groww or fetch new scheme pages. The model inside a node may return an id from that node's allowed list. The fact text, the citation, the count, and the signal come from the files above.
 
@@ -139,8 +144,8 @@ Complaint: *"Why was I charged an exit load on HDFC Large Cap Fund?"*
 2. The graph starts the **Facts**, **Pattern**, and **Compliance** nodes together, each with the same redacted text. The Facts model returns `large_cap` and `Exit load`. Code copies *"Exit load of 1% if redeemed within 1 year"* with `https://groww.in/mutual-funds/hdfc-large-cap-fund-direct-growth` and last-checked `25-Jun-2026`. The Pattern model returns `fees_brokerage`. Code counts 136 reviews (avg rating 2.2) over 2026-04-12 to 2026-07-04 and labels the signal recurring or rising from the date split below. The Compliance model returns no advice and no performance flag, and the PII scan is empty. All three results come back on the graph state.
 3. The **orchestrator** writes at most three sentences stating the cited exit-load rule and the last-checked date, plus a routing note to the fees team. If the pattern signal is recurring or rising, the note says the ticket stays open because the same issue is already showing up across reviews. It does not close the ticket just because the fact was easy.
 4. The orchestrator **sends that draft to the reviewer**. The reviewer checks citation, advice, PII, and length. On pass, the human sees the draft and the routing note.
-5. **Approve** appends a redacted record and writes `out/email_drafts/{id}.txt`. Nothing is emailed yet.
-6. **Preview mail** shows To, subject, and the customer body. **Send** calls MCP (`reflect_content` for the ticket doc, `send_email` for Gmail from the workspace account). Internal routing is not in the customer body.
+5. **Approve** (via `POST /v1/sessions/{id}/approve`) appends a redacted record and writes `out/email_drafts/{id}.txt`. Nothing is emailed yet.
+6. **Preview mail** then **Send** on the Vercel UI call the API; MCP runs on Railway. Internal routing is not in the customer body.
 
 ## Components
 
@@ -344,19 +349,31 @@ If the reviewer status is `blocked`, Approve is disabled. The gate refuses a pro
 
 The record and the email body use the redacted complaint. Raw PII never lands in the files.
 
-### Streamlit desk
+### Front end (Vercel)
 
-`streamlit_app.py` is the support UI (Stitch intake + result: Inter, `#faf8ff`, primary `#00d09c`).
+`frontend/` is a Vite + React desk (Stitch intake + result: Inter, `#faf8ff`, primary `#00d09c`). It only calls HTTP. Env: `VITE_API_URL` = the Railway origin (empty in local `npm run dev`, which proxies `/v1` to `:8000`).
 
 | Screen | What the agent does |
 |---|---|
-| Intake | Paste the complaint, **Run**. The graph starts Facts, Pattern, and Compliance together. |
-| Result | Customer **Reply** (≤3 sentences) and **Internal** routing (not emailed). Trace is collapsed. |
-| Approve | Enabled only on reviewer `pass`. Saves the record and local draft file. |
-| Preview mail | Dialog after Approve: editable To (`MAIL_TO` or `investor.support@groww.in`), subject, body. Cancel or **Send**. Gmail is the MCP workspace account. |
-| Send | `mail.send_preview`: Google Doc via `reflect_content` (reply plus internal note), then Gmail via `send_email`. From on the form is not a Gmail header; the workspace account sends. |
+| Intake | Paste the complaint, **Run** → `POST /v1/sessions`. |
+| Result | Customer **Reply** and **Internal** routing (not emailed). Trace is collapsed. |
+| Approve | `POST /v1/sessions/{id}/approve` when reviewer `pass`. |
+| Preview mail | `POST .../mail/preview` after Approve. Editable To, subject, body. |
+| Send | `POST .../mail/send`. MCP `reflect_content` then `send_email` on Railway. |
 
-Blocked drafts show the flag and do not offer Approve, Preview, or Send.
+Blocked drafts do not offer Approve, Preview, or Send. `streamlit_app.py` remains a local-only alternative that calls the graph in-process.
+
+### Back end (Railway)
+
+`support_reply.api:app` (FastAPI). Start: `PYTHONPATH=src python -m uvicorn support_reply.api:app --host 0.0.0.0 --port $PORT`. CORS: `FRONTEND_ORIGIN` (Vercel URL plus `http://localhost:5173`). Sessions live in process memory; a restart drops unsaved threads. `out/` is on the API host.
+
+| Method | Path | Effect |
+|---|---|---|
+| GET | `/health` | `{ok: true}` |
+| POST | `/v1/sessions` | Run ingress + graph. Body `{complaint}`. Returns redacted DTO + `session_id`. |
+| POST | `/v1/sessions/{id}/approve` | Same as `gate.approve`. |
+| POST | `/v1/sessions/{id}/mail/preview` | Body `{to}`. Does not send. |
+| POST | `/v1/sessions/{id}/mail/send` | Body `{to}`. MCP send. |
 
 ### Mail and MCP
 

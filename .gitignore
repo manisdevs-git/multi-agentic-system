@@ -9,3 +9,5 @@ out/
 .env
 .cursor/
 .stitch/
+frontend/node_modules/
+frontend/dist/

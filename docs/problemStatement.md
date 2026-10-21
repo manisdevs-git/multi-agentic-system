@@ -114,9 +114,9 @@ Same gate as Milestone 2. Nothing is written without a human clicking **Approve*
 - Append the redacted record (`out/records.jsonl`)
 - Write the local email draft file (`out/email_drafts/`)
 
-The Streamlit desk then offers **Preview mail** (From / To / body). **Send** is a second click: MCP `reflect_content` (ticket Google Doc) and `send_email` (customer reply). **No auto-send** from Approve.
+The web desk (`frontend/`, Vercel) then offers **Preview mail** (To / body). **Send** is a second click to the API (`support_reply.api`, Railway): MCP `reflect_content` and `send_email`. **No auto-send** from Approve.
 
-The desk is `streamlit_app.py` (intake paste + result reply/internal). Internal routing is not emailed.
+Internal routing is not emailed. The browser never runs Facts, Pattern, or Compliance.
 
 ## Rules
 

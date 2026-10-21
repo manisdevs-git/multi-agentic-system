@@ -6,7 +6,7 @@ The system drafts a support reply. It does not fetch Groww pages, add schemes, o
 
 ## Decisions
 
-- **Language:** Python 3.11+. One package, `src/support_reply/`, with pytest. Phases 0–10 stay callable with no UI. Phase 11 adds the Streamlit desk (`streamlit_app.py`). `langgraph` and `openai` (DeepInfra's OpenAI-compatible API) ship with the agent subgraphs in Phases 2–4. The parent graph that mounts those nodes is Phase 6.
+- **Language:** Python 3.11+ back end (`src/support_reply/`, FastAPI). Vite + React front end (`frontend/`). Phases 0–10 stay callable with no UI. Phase 11 is Streamlit (local). Phase 13 is the HTTP API + Vercel UI. `langgraph` and `openai` ship with the agent subgraphs in Phases 2–4.
 - **LangGraph.** `graph.py` is one `StateGraph`. Facts, Pattern, and Compliance are nodes. Ingress, draft, and the reviewer are nodes too. The graph starts the three agent nodes together.
 - **Model inside each agent node.** One DeepInfra call per node (`DEEPINFRA_API_KEY`, optional `DEEPINFRA_MODEL`, default `deepseek-ai/DeepSeek-V4-Flash-0731`). Facts returns a `scheme_id` and a section title. Pattern returns a `theme_id`. Compliance returns `advice`, `performance_claim`, or neither. Corpus copy, theme counts, signal math, the PII scan, disposition, and the three-sentence draft stay plain code. Their outputs are the JSON contracts in the architecture. With no key, or when the call fails, the node uses the cue tables below, so the acceptance run needs no network.
 - **Model inside the reviewer.** One DeepInfra call per review round (`DEEPINFRA_API_KEY`, optional `DEEPINFRA_REVIEW_MODEL` then `DEEPINFRA_MODEL`, default `deepseek-ai/DeepSeek-V4-Flash-0731`) scans the outgoing draft for `advice` and `performance` and quotes the offending span. A finding counts only when that span is in the reply, and never for a figure Facts copied from the cited text block. The citation, PII, and shape checks are code only, and the code cues for advice and performance always run beside the model, so the reviewer fails closed with no key and no network. The rewrite is template code, not a model.
@@ -35,8 +35,10 @@ src/support_reply/
   mcp.py            # JSON-RPC client for send_email / reflect_content
   evals.py          # offline eval runner
   accept.py         # Phase 10 acceptance
+  api.py            # FastAPI: Railway back end
   trace.py          # start/return log for the demo
-streamlit_app.py    # desk: intake Run, result Reply/Internal, Approve, Preview, Send
+streamlit_app.py    # optional local desk (in-process graph)
+frontend/           # Vercel React desk (calls /v1)
 evals/cases.json    # graded edge cases
 tests/
   fixtures.py       # the four branches and the advice-refusal thread
@@ -63,8 +65,9 @@ flowchart TD
   P8[Phase 8 Session and refinement]
   P9[Phase 9 Approval gate]
   P10[Phase 10 Acceptance run]
-  P11[Phase 11 Desk, preview, send]
+  P11[Phase 11 Streamlit desk]
   P12[Phase 12 Evals]
+  P13[Phase 13 FastAPI + Vercel UI]
 
   P0 --> P1
   P0 --> P2
@@ -83,6 +86,8 @@ flowchart TD
   P9 --> P11
   P10 --> P12
   P2 --> P12
+  P11 --> P13
+  P9 --> P13
 ```
 
 Phases 2, 3, and 4 can be built in parallel once Phase 0 and, for Compliance, Phase 1 are done. They must not import each other.
@@ -469,6 +474,23 @@ Run: `streamlit run streamlit_app.py` from the repo root (venv).
 
 ---
 
+## Phase 13 — FastAPI back end and Vercel front end
+
+**Build**
+
+- Railway: `support_reply.api:app`. `Procfile` / `railway.toml`. Secrets: `DEEPINFRA_API_KEY`, `MCP_SERVER_URL`, `FRONTEND_ORIGIN` (the Vercel origin).
+- Vercel: Root Directory `frontend`, build `npm run build`, output `dist`. Env `VITE_API_URL` = `https://<railway>.up.railway.app`.
+- Local: `PYTHONPATH=src python -m uvicorn support_reply.api:app --port 8000` and `cd frontend && npm run dev`.
+
+**Exit**
+
+- `pytest tests/test_api.py` (fake MCP). Approve then preview then send. Raw PAN absent from JSON.
+- Browser talks only to `/v1`; corpus stays on the API host.
+
+See `docs/deploy.md`.
+
+---
+
 ## What this plan leaves out
 
 - Auto-send on Approve, or SMTP inside `gate.py`.
@@ -492,3 +514,4 @@ Run: `streamlit run streamlit_app.py` from the repo root (venv).
 | 10 | 20 reviews, four branches, advice thread | 9 |
 | 11 | Streamlit desk, Preview mail, MCP Send | 9 |
 | 12 | Edge-case evals | 2, 10 |
+| 13 | FastAPI (Railway) + React (Vercel) | 9, 11 |
