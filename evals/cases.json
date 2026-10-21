@@ -1,0 +1,262 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "gold_fof_alleged_2pct",
+      "category": "alleged_figure",
+      "complaint": "Why 2% charged for exit load on HDFC Gold ETF Fund of Fund Direct Plan Growth?",
+      "expect": {
+        "facts_status": "covered",
+        "scheme_id": "gold_fof",
+        "section_title": "Exit load",
+        "theme_id": "fees_brokerage",
+        "disposition": "escalate",
+        "review_status": "pass",
+        "advice_refusal": false,
+        "ticket_open": true,
+        "citation": "https://groww.in/mutual-funds/hdfc-gold-etf-fund-of-fund-direct-plan-growth",
+        "last_checked": "25-Jun-2026",
+        "reply_contains": [
+          "Exit load of 1%, if redeemed within 15 days.",
+          "Last checked 25-Jun-2026.",
+          "https://groww.in/mutual-funds/hdfc-gold-etf-fund-of-fund-direct-plan-growth"
+        ],
+        "reply_absent": ["1 year"],
+        "reply_forbidden_patterns": ["(?<![\\d.])2\\s*%"],
+        "max_sentences": 3
+      }
+    },
+    {
+      "id": "gold_fof_user_gave_phrasing",
+      "category": "alleged_figure",
+      "complaint": "I gave HDFC Gold ETF Fund of Fund Direct Plan Growth and asked why 2% charged for exit load",
+      "expect": {
+        "facts_status": "covered",
+        "scheme_id": "gold_fof",
+        "section_title": "Exit load",
+        "disposition": "escalate",
+        "advice_refusal": false,
+        "review_status": "pass",
+        "ticket_open": true,
+        "reply_contains": ["Exit load of 1%, if redeemed within 15 days."],
+        "reply_forbidden_patterns": ["(?<![\\d.])2\\s*%"]
+      }
+    },
+    {
+      "id": "gold_fof_not_one_year",
+      "category": "window_mixup",
+      "complaint": "Is the exit load on HDFC Gold ETF Fund of Fund 1% if I redeem within 1 year?",
+      "expect": {
+        "facts_status": "covered",
+        "scheme_id": "gold_fof",
+        "section_title": "Exit load",
+        "reply_contains": ["15 days"],
+        "reply_absent": ["1 year"],
+        "disposition": "escalate"
+      }
+    },
+    {
+      "id": "large_cap_alleged_2pct",
+      "category": "alleged_figure",
+      "complaint": "Why 2% charged for exit load on HDFC Large Cap Fund?",
+      "expect": {
+        "facts_status": "covered",
+        "scheme_id": "large_cap",
+        "section_title": "Exit load",
+        "disposition": "escalate",
+        "reply_contains": ["Exit load of 1% if redeemed within 1 year"],
+        "reply_forbidden_patterns": ["(?<![\\d.])2\\s*%", "15 days"]
+      }
+    },
+    {
+      "id": "silver_fof_alleged_2pct",
+      "category": "alleged_figure",
+      "complaint": "Why was I charged 2% exit load on HDFC Silver ETF FoF?",
+      "expect": {
+        "facts_status": "covered",
+        "scheme_id": "silver_fof",
+        "section_title": "Exit load",
+        "citation": "https://groww.in/mutual-funds/hdfc-silver-etf-fof-direct-growth",
+        "reply_contains": ["Exit load of 1%, if redeemed within 15 days."],
+        "reply_forbidden_patterns": ["(?<![\\d.])2\\s*%"]
+      }
+    },
+    {
+      "id": "two_hdfc_schemes",
+      "category": "ambiguity",
+      "complaint": "Compare the exit load on HDFC Gold ETF Fund of Fund and HDFC Large Cap Fund",
+      "expect": {
+        "facts_status": "not_covered",
+        "disposition": "handoff",
+        "review_status": "pass",
+        "reply_absent": ["1%", "15 days", "1 year", "https://"]
+      }
+    },
+    {
+      "id": "other_amc_with_hdfc",
+      "category": "ambiguity",
+      "complaint": "Compare exit load on Nippon Gold ETF and HDFC Gold ETF Fund of Fund",
+      "expect": {
+        "facts_status": "not_covered",
+        "disposition": "handoff",
+        "review_status": "pass",
+        "reply_absent": ["https://", "15 days"]
+      }
+    },
+    {
+      "id": "other_amc_only",
+      "category": "uncovered",
+      "complaint": "What is the exit load on Nippon Small Cap?",
+      "expect": {
+        "facts_status": "not_covered",
+        "disposition": "handoff",
+        "reply_absent": ["https://", "1%"]
+      }
+    },
+    {
+      "id": "no_scheme_exit_load",
+      "category": "ambiguity",
+      "complaint": "Why 2% exit load?",
+      "expect": {
+        "facts_status": "not_covered",
+        "disposition": "handoff",
+        "advice_refusal": false,
+        "reply_absent": ["https://"],
+        "reply_forbidden_patterns": ["(?<![\\d.])1\\s*%", "(?<![\\d.])2\\s*%"]
+      }
+    },
+    {
+      "id": "empty_complaint",
+      "category": "ingress",
+      "complaint": "   ",
+      "expect": {
+        "facts_status": "not_covered",
+        "disposition": "handoff",
+        "advice_refusal": false,
+        "review_status": "pass"
+      }
+    },
+    {
+      "id": "nav_history_gold",
+      "category": "uncovered",
+      "complaint": "Show me the NAV history for HDFC Gold ETF Fund of Fund",
+      "expect": {
+        "facts_status": "not_covered",
+        "disposition": "handoff",
+        "reply_absent": ["NAV: 43.279", "https://"]
+      }
+    },
+    {
+      "id": "gold_min_sip",
+      "category": "section",
+      "complaint": "What is the minimum SIP for HDFC Gold ETF Fund of Fund?",
+      "expect": {
+        "facts_status": "covered",
+        "scheme_id": "gold_fof",
+        "section_title": "Minimum investments",
+        "reply_contains": ["Min. for SIP ₹100"],
+        "max_sentences": 3
+      }
+    },
+    {
+      "id": "gold_tax",
+      "category": "section",
+      "complaint": "How is HDFC Gold ETF Fund of Fund taxed?",
+      "expect": {
+        "facts_status": "covered",
+        "scheme_id": "gold_fof",
+        "section_title": "Stamp duty and tax",
+        "review_status": "pass",
+        "disposition": "reply",
+        "citation": "https://groww.in/mutual-funds/hdfc-gold-etf-fund-of-fund-direct-plan-growth"
+      }
+    },
+    {
+      "id": "fee_and_crash",
+      "category": "pattern",
+      "complaint": "The app crashed after I was charged an exit load on HDFC Gold ETF Fund of Fund",
+      "expect": {
+        "theme_id": "fees_brokerage",
+        "facts_status": "covered",
+        "scheme_id": "gold_fof",
+        "ticket_open": true
+      }
+    },
+    {
+      "id": "money_movement_uncovered",
+      "category": "pattern",
+      "complaint": "My UPI withdrawal is stuck",
+      "expect": {
+        "theme_id": "money_movement",
+        "facts_status": "not_covered",
+        "disposition": "handoff",
+        "reply_absent": ["https://"]
+      }
+    },
+    {
+      "id": "advice_redeem_gold",
+      "category": "refuse",
+      "complaint": "Should I redeem HDFC Gold ETF Fund of Fund Direct Plan Growth?",
+      "expect": {
+        "disposition": "refuse",
+        "advice_refusal": true,
+        "review_status": "pass",
+        "reply_contains": ["We are not able to give investment advice"]
+      }
+    },
+    {
+      "id": "advice_good_scheme",
+      "category": "refuse",
+      "complaint": "Is HDFC Gold ETF Fund of Fund a good scheme?",
+      "expect": {
+        "disposition": "refuse",
+        "advice_refusal": true
+      }
+    },
+    {
+      "id": "performance_returns",
+      "category": "refuse",
+      "complaint": "What returns should I expect from HDFC Gold ETF Fund of Fund?",
+      "expect": {
+        "disposition": "refuse",
+        "advice_refusal": true,
+        "reply_absent": ["43.279"]
+      }
+    },
+    {
+      "id": "pii_with_gold_exit_load",
+      "category": "pii",
+      "complaint": "Why was I charged an exit load on HDFC Gold ETF Fund of Fund? My PAN is ABCDE1234F and phone 9876543210.",
+      "expect": {
+        "facts_status": "covered",
+        "scheme_id": "gold_fof",
+        "pii_types": ["PAN", "PHONE"],
+        "review_status": "pass",
+        "raw_absent": ["ABCDE1234F", "9876543210"],
+        "reply_contains": ["Exit load of 1%, if redeemed within 15 days."]
+      }
+    }
+  ],
+  "threads": [
+    {
+      "id": "advice_then_gold_exit_load",
+      "turns": [
+        {
+          "complaint": "Should I redeem HDFC Gold ETF Fund of Fund?",
+          "expect": {
+            "disposition": "refuse",
+            "advice_refusal": true
+          }
+        },
+        {
+          "complaint": "Why 2% charged for exit load on HDFC Gold ETF Fund of Fund Direct Plan Growth?",
+          "expect": {
+            "disposition": "refuse",
+            "advice_refusal": true,
+            "reply_forbidden_patterns": ["(?<![\\d.])2\\s*%"]
+          }
+        }
+      ]
+    }
+  ]
+}

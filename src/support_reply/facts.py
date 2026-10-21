@@ -1,7 +1,7 @@
 """Facts Agent. Reads the redacted complaint and `data/parsed/` only.
 
 LangGraph subgraph: classify, then copy one text block.
-Groq classifies when `GROQ_API_KEY` is set. With no key, or when the call
+DeepInfra classifies when `DEEPINFRA_API_KEY` is set. With no key, or when the call
 fails, the cue tables pick the scheme and the section.
 The fact is copied from that text block. No match is `not_covered`.
 """
@@ -152,7 +152,7 @@ def _accept_scheme(
     """A different AMC, or two schemes in one complaint, is no match."""
     if scheme_id not in scheme_ids:
         return None
-    if _OTHER_AMC.search(text) and not re.search(r"\bhdfc\b", text, re.I):
+    if _OTHER_AMC.search(text):
         return None
     found = [item for item, cue in _SCHEME_CUES if cue.search(text)]
     if len(found) > 1:
@@ -173,7 +173,7 @@ def _match_scheme(text: str) -> str | None:
     found = [scheme_id for scheme_id, cue in _SCHEME_CUES if cue.search(text)]
     if len(found) != 1:
         return None
-    if _OTHER_AMC.search(text) and not re.search(r"\bhdfc\b", text, re.I):
+    if _OTHER_AMC.search(text):
         return None
     return found[0]
 

@@ -109,12 +109,14 @@ Log which agents fired on each refinement.
 
 ### Approval-gated MCP
 
-Same gate as Milestone 2. Nothing moves without a human clicking **approve**. After approval:
+Same gate as Milestone 2. Nothing is written without a human clicking **Approve**. After Approve:
 
-- Append the record to the doc
-- Create the email draft
+- Append the redacted record (`out/records.jsonl`)
+- Write the local email draft file (`out/email_drafts/`)
 
-**No auto-send.**
+The Streamlit desk then offers **Preview mail** (From / To / body). **Send** is a second click: MCP `reflect_content` (ticket Google Doc) and `send_email` (customer reply). **No auto-send** from Approve.
+
+The desk is `streamlit_app.py` (intake paste + result reply/internal). Internal routing is not emailed.
 
 ## Rules
 
@@ -142,4 +144,4 @@ Same gate as Milestone 2. Nothing moves without a human clicking **approve**. Af
 ## Dependencies on Prior Milestones
 
 - **Milestone 1** is already materialized as `data/parsed/`. The Facts Agent cites `source_url` from those files and does not fetch new pages.
-- **Milestone 2** is already materialized as `data/normalized_reviews.json` and `data/analyzed_themes.json`. The Pattern Agent matches against those themes. The approval-gated MCP flow from Milestone 2 is reused here: nothing is appended or emailed until a human clicks approve.
+- **Milestone 2** is already materialized as `data/normalized_reviews.json` and `data/analyzed_themes.json`. The Pattern Agent matches against those themes. The approval-gated flow is reused: nothing is appended until a human clicks Approve, and nothing is emailed until Preview mail → Send.

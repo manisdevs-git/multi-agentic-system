@@ -1,14 +1,12 @@
 """Classifiers for the Facts, Pattern, Compliance, and reviewer nodes.
 
-Groq is used for the three agent nodes when `GROQ_API_KEY` is set. `GROQ_MODEL`
-overrides the model name. Each Groq call asks for `reasoning_effort=low` on the
-gpt-oss models and caps the completion at 128 tokens, so the three calls started
-together stay inside the free-tier 8,000 tokens per minute. Gemini is used for
-the reviewer's advice and performance scan when `GEMINI_API_KEY` is set;
-`GEMINI_MODEL` overrides it. Keys are read from the environment, then from a
-repo `.env` (see `.env.example`) for any name that is still unset.
-With no key, or when a call fails, `classify_or_none` returns None and the
-node uses its cue table or code checks.
+DeepInfra is used for every model call when `DEEPINFRA_API_KEY` is set. Default
+model is `deepseek-ai/DeepSeek-V4-Flash-0731` for Facts, Pattern, Compliance, and
+the reviewer. `DEEPINFRA_MODEL` overrides agents and the reviewer;
+`DEEPINFRA_REVIEW_MODEL` overrides the reviewer only. Keys are read from the
+environment, then from a repo `.env` (see `.env.example`) for any name that is
+still unset. With no key, or when the call fails, `classify_or_none` returns None
+and the node uses its cue table or code checks.
 
 The model sees redacted text and the allowed ids. It returns JSON. It does not
 write a fact, a count, a citation, or a reply. The reviewer model only names a
@@ -32,23 +30,10 @@ TASK_PATTERN = "pattern"
 TASK_COMPLIANCE = "compliance"
 TASK_REVIEW = "review"
 
-DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai"
+DEFAULT_DEEPINFRA_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731"
 _TIMEOUT_SECONDS = 20.0
-# Free tier for gpt-oss is 8_000 tokens per minute, prompt plus completion,
-# and reasoning tokens count. Facts, Pattern, and Compliance each make one
-# call, and the graph starts the three together. The JSON answer is a few
-# dozen tokens, so the completion cap stays at the short-answer floor and
-# reasoning effort stays low.
-GROQ_MAX_COMPLETION_TOKENS = 128
-GROQ_REASONING_EFFORT = "low"
-_LOW_REASONING_MODELS = frozenset(
-    {
-        "openai/gpt-oss-20b",
-        "openai/gpt-oss-120b",
-        "qwen/qwen3.8-27b",
-    }
-)
+_MAX_TOKENS = 256
 
 _COMPLAINT_PREAMBLE = (
     "You classify one redacted support complaint. "
@@ -123,65 +108,25 @@ class Classifier(Protocol):
         """Return the JSON object for this task."""
 
 
-class GroqClassifier:
-    """Groq chat call that must answer with one JSON object."""
+class DeepInfraClassifier:
+    """DeepInfra OpenAI-compatible call that must answer with one JSON object.
+
+    Used by Facts, Pattern, Compliance, and the reviewer.
+    """
 
     def __init__(self, *, api_key: str, model: str, client: Any = None) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
-            raise ValueError("GROQ_API_KEY is empty")
+            raise ValueError("DEEPINFRA_API_KEY is empty")
         if not isinstance(model, str) or not model.strip():
-            raise ValueError("GROQ_MODEL is empty")
+            raise ValueError("DEEPINFRA_MODEL is empty")
         self.model = model.strip()
         if client is None:
-            from groq import Groq
+            from openai import OpenAI
 
-            client = Groq(api_key=api_key.strip(), timeout=_TIMEOUT_SECONDS)
-        self._client = client
-
-    def classify(
-        self,
-        *,
-        task: str,
-        redacted_text: str,
-        allowed: Mapping[str, Sequence[str]],
-        labels: Mapping[str, str] | None = None,
-    ) -> Mapping[str, Any]:
-        if not isinstance(redacted_text, str):
-            raise TypeError("classifier expects redacted text")
-        system = instructions(task, allowed, labels)
-        logger.info("groq classify task=%s model=%s", task, self.model)
-        completion = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": redacted_text},
-            ],
-            **_groq_limits(self.model),
-        )
-        try:
-            content = completion.choices[0].message.content
-        except (AttributeError, IndexError, TypeError) as exc:
-            raise ValueError("model response has no message content") from exc
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError("model response is empty")
-        return parse_json_object(content)
-
-
-class GeminiClassifier:
-    """Gemini call that must answer with one JSON object. Used by the reviewer."""
-
-    def __init__(self, *, api_key: str, model: str, client: Any = None) -> None:
-        if not isinstance(api_key, str) or not api_key.strip():
-            raise ValueError("GEMINI_API_KEY is empty")
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError("GEMINI_MODEL is empty")
-        self.model = model.strip()
-        if client is None:
-            from google import genai
-
-            client = genai.Client(
+            client = OpenAI(
                 api_key=api_key.strip(),
-                http_options={"timeout": int(_TIMEOUT_SECONDS * 1000)},
+                base_url=DEEPINFRA_BASE_URL,
+                timeout=_TIMEOUT_SECONDS,
             )
         self._client = client
 
@@ -196,35 +141,24 @@ class GeminiClassifier:
         if not isinstance(redacted_text, str):
             raise TypeError("classifier expects redacted text")
         system = instructions(task, allowed, labels)
-        logger.info("gemini classify task=%s model=%s", task, self.model)
-        response = self._client.models.generate_content(
+        logger.info("deepinfra classify task=%s model=%s", task, self.model)
+        response = self._client.chat.completions.create(
             model=self.model,
-            contents=redacted_text,
-            config={
-                "system_instruction": system,
-                "temperature": 0,
-                "seed": 0,
-                "response_mime_type": "application/json",
-            },
+            temperature=0,
+            max_tokens=_MAX_TOKENS,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": redacted_text},
+            ],
         )
-        content = getattr(response, "text", None)
+        try:
+            content = response.choices[0].message.content
+        except (AttributeError, IndexError, TypeError) as exc:
+            raise ValueError("model response is empty") from exc
         if not isinstance(content, str) or not content.strip():
             raise ValueError("model response is empty")
         return parse_json_object(content)
-
-
-def _groq_limits(model: str) -> dict[str, Any]:
-    """Completion budget for one Groq call under the 8_000 token minute cap."""
-    limits: dict[str, Any] = {
-        "temperature": 0,
-        "seed": 0,
-        "max_completion_tokens": GROQ_MAX_COMPLETION_TOKENS,
-        "response_format": {"type": "json_object"},
-        "timeout": _TIMEOUT_SECONDS,
-    }
-    if model in _LOW_REASONING_MODELS:
-        limits["reasoning_effort"] = GROQ_REASONING_EFFORT
-    return limits
 
 
 def _apply_env_lines(lines: Iterable[str], env: MutableMapping[str, str]) -> None:
@@ -255,28 +189,38 @@ def _load_project_env() -> None:
         return
 
 
-def default_classifier() -> GroqClassifier | None:
-    """Return a Groq classifier for the agent nodes when `GROQ_API_KEY` is set."""
-    key = os.environ.get("GROQ_API_KEY", "").strip()
-    if not key:
-        return None
-    model = os.environ.get("GROQ_MODEL", DEFAULT_GROQ_MODEL).strip() or DEFAULT_GROQ_MODEL
-    return GroqClassifier(api_key=key, model=model)
+def _deepinfra_key() -> str:
+    return os.environ.get("DEEPINFRA_API_KEY", "").strip()
 
 
-def default_review_classifier() -> GeminiClassifier | None:
-    """Return a Gemini classifier for the reviewer when `GEMINI_API_KEY` is set."""
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
+def _deepinfra_model(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return DEFAULT_DEEPINFRA_MODEL
+
+
+def default_classifier() -> DeepInfraClassifier | None:
+    """Return a DeepInfra classifier for the agent nodes when `DEEPINFRA_API_KEY` is set."""
+    key = _deepinfra_key()
     if not key:
         return None
-    model = (
-        os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+    return DeepInfraClassifier(api_key=key, model=_deepinfra_model("DEEPINFRA_MODEL"))
+
+
+def default_review_classifier() -> DeepInfraClassifier | None:
+    """Return a DeepInfra classifier for the reviewer when `DEEPINFRA_API_KEY` is set."""
+    key = _deepinfra_key()
+    if not key:
+        return None
+    return DeepInfraClassifier(
+        api_key=key, model=_deepinfra_model("DEEPINFRA_REVIEW_MODEL", "DEEPINFRA_MODEL")
     )
-    return GeminiClassifier(api_key=key, model=model)
 
 
 def default_for(task: str) -> Classifier | None:
-    """The configured model for a task: Gemini for the review, Groq for the agents."""
+    """The configured DeepInfra model for a task. Agents and review share one key."""
     if task == TASK_REVIEW:
         return default_review_classifier()
     return default_classifier()

@@ -1,7 +1,7 @@
 """Pattern Agent. Reads the redacted complaint, `allThemes`, and review dates.
 
 LangGraph subgraph: classify a theme, then count that theme's review dates.
-Groq classifies when `GROQ_API_KEY` is set. With no key, or when the call
+DeepInfra classifies when `DEEPINFRA_API_KEY` is set. With no key, or when the call
 fails, the cue table assigns the theme. An unknown id is `other`.
 The model does not supply `count` or `signal`.
 It does not read Facts or Compliance output.

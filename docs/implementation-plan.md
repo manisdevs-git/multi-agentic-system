@@ -2,17 +2,17 @@
 
 This plan turns `docs/architecture.md` into build order. Milestone 1 and Milestone 2 are already on disk (`data/parsed/`, `data/normalized_reviews.json`, `data/analyzed_themes.json`). Each phase below adds one piece, has a testable exit, and leaves the next phase able to call it.
 
-The system drafts a support reply. It does not send email, fetch Groww pages, add schemes, or store raw PII.
+The system drafts a support reply. It does not fetch Groww pages, add schemes, or store raw PII. Approve writes local files only. Preview → Send is a later UI step that calls MCP Gmail/Docs.
 
 ## Decisions
 
-- **Language:** Python 3.11+. One package, `src/support_reply/`, with pytest. No web UI in the first build. A CLI drives a session so the demo trace is a log, not a screenshot. `langgraph` and `groq` ship with the agent subgraphs in Phases 2–4. The parent graph that mounts those nodes is Phase 6.
+- **Language:** Python 3.11+. One package, `src/support_reply/`, with pytest. Phases 0–10 stay callable with no UI. Phase 11 adds the Streamlit desk (`streamlit_app.py`). `langgraph` and `openai` (DeepInfra's OpenAI-compatible API) ship with the agent subgraphs in Phases 2–4. The parent graph that mounts those nodes is Phase 6.
 - **LangGraph.** `graph.py` is one `StateGraph`. Facts, Pattern, and Compliance are nodes. Ingress, draft, and the reviewer are nodes too. The graph starts the three agent nodes together.
-- **Model inside each agent node.** One Groq call per node (`GROQ_API_KEY`, optional `GROQ_MODEL`). Facts returns a `scheme_id` and a section title. Pattern returns a `theme_id`. Compliance returns `advice`, `performance_claim`, or neither. Corpus copy, theme counts, signal math, the PII scan, disposition, and the three-sentence draft stay plain code. Their outputs are the JSON contracts in the architecture. With no key, or when the call fails, the node uses the cue tables below, so the acceptance run needs no network.
-- **Model inside the reviewer.** One Gemini call per review round (`GEMINI_API_KEY`, optional `GEMINI_MODEL`, default `gemini-2.5-flash`) scans the outgoing draft for `advice` and `performance` and quotes the offending span. A finding counts only when that span is in the reply, and never for a figure Facts copied from the cited text block. The citation, PII, and shape checks are code only, and the code cues for advice and performance always run beside the model, so the reviewer fails closed with no key and no network. The rewrite is template code, not a model.
+- **Model inside each agent node.** One DeepInfra call per node (`DEEPINFRA_API_KEY`, optional `DEEPINFRA_MODEL`, default `deepseek-ai/DeepSeek-V4-Flash-0731`). Facts returns a `scheme_id` and a section title. Pattern returns a `theme_id`. Compliance returns `advice`, `performance_claim`, or neither. Corpus copy, theme counts, signal math, the PII scan, disposition, and the three-sentence draft stay plain code. Their outputs are the JSON contracts in the architecture. With no key, or when the call fails, the node uses the cue tables below, so the acceptance run needs no network.
+- **Model inside the reviewer.** One DeepInfra call per review round (`DEEPINFRA_API_KEY`, optional `DEEPINFRA_REVIEW_MODEL` then `DEEPINFRA_MODEL`, default `deepseek-ai/DeepSeek-V4-Flash-0731`) scans the outgoing draft for `advice` and `performance` and quotes the offending span. A finding counts only when that span is in the reply, and never for a figure Facts copied from the cited text block. The citation, PII, and shape checks are code only, and the code cues for advice and performance always run beside the model, so the reviewer fails closed with no key and no network. The rewrite is template code, not a model.
 - **One caller.** The graph is the only thing that starts Facts, Pattern, Compliance, and the reviewer. Ingress is a node it runs first. Agent nodes receive `redacted_text` (and, for Compliance, `pii_types`). They never receive another node's result.
 - **Parallel means started together.** The orchestrator submits all three agent calls, then waits. A trace records `start` timestamps before any `return` timestamp, and records the reviewer call only after all three results exist.
-- **Approval gate is local.** Milestone 2's MCP server is not in this repo. The gate is a function with the same effect: on human approve, append one redacted record and write an email draft file. It does not send.
+- **Approval gate is local.** `gate.approve` appends one redacted record and writes an email draft file. It does not send. Phase 11 uses a **separate** MCP client (`mcp.py` / `mail.py`) after Preview → Send (`send_email`, `reflect_content` on `MCP_SERVER_URL`, default `http://127.0.0.1:8080/mcp`).
 
 ## Layout
 
@@ -28,11 +28,16 @@ src/support_reply/
   llm.py            # classifier interface; cue fallback when no model is configured
   draft.py          # reply text + routing note from the three results
   reviewer.py
-  session.py        # state, refinement routing, agents_fired
   graph.py          # StateGraph: ingress, three agent nodes, draft, reviewer
-  orchestrator.py   # session entry that invokes the graph
-  gate.py           # append record, write email draft
+  session.py        # refinement routing, agents_fired
+  gate.py           # append record, write email draft file; no send
+  mail.py           # compose preview after Approve; send_preview via MCP
+  mcp.py            # JSON-RPC client for send_email / reflect_content
+  evals.py          # offline eval runner
+  accept.py         # Phase 10 acceptance
   trace.py          # start/return log for the demo
+streamlit_app.py    # desk: intake Run, result Reply/Internal, Approve, Preview, Send
+evals/cases.json    # graded edge cases
 tests/
   fixtures.py       # the four branches and the advice-refusal thread
   test_*.py
@@ -58,6 +63,8 @@ flowchart TD
   P8[Phase 8 Session and refinement]
   P9[Phase 9 Approval gate]
   P10[Phase 10 Acceptance run]
+  P11[Phase 11 Desk, preview, send]
+  P12[Phase 12 Evals]
 
   P0 --> P1
   P0 --> P2
@@ -73,6 +80,9 @@ flowchart TD
   P7 --> P8
   P8 --> P9
   P9 --> P10
+  P9 --> P11
+  P10 --> P12
+  P2 --> P12
 ```
 
 Phases 2, 3, and 4 can be built in parallel once Phase 0 and, for Compliance, Phase 1 are done. They must not import each other.
@@ -131,7 +141,7 @@ This agent is a LangGraph subgraph the parent graph will mount as the Facts node
 1. Call the classifier with the redacted complaint and the allowed ids: `large_cap`, `mid_cap`, `small_cap`, `gold_fof`, `silver_fof`, and the seven section titles. The call returns at most one `scheme_id` and one section title. An id outside those lists is no match.
 2. When no model is configured, or the call fails, use the cue tables. Scheme cues, gold and silver first so they do not match an equity cap scheme: Large Cap, Mid Cap, Small Cap, Gold ETF Fund of Fund, Silver ETF FoF. Section cues, in order: exit load, benchmark, investment objective, stamp duty / tax, fund management, minimum investment / SIP, key fund facts (NAV, expense ratio, AUM, riskometer).
 3. **Covered:** copy `fact` from that `text_block.text`, set `citation` to that file's `source_url`, set `last_checked` to `nav_date` (`25-Jun-2026`). One link. This step does not call the model.
-4. **Not covered:** another scheme, another AMC, an app bug, an order, a withdrawal, a login failure, or a question none of the seven sections answer. `status: "not_covered"`, `fact` and `citation` null, `searched` listing the five scheme ids and the section titles opened.
+4. **Not covered:** another scheme, another AMC (including Nippon/SBI/… named next to HDFC), two of the five schemes in one complaint, an app bug, an order, a withdrawal, a login failure, NAV history, or a question none of the seven sections answer. `status: "not_covered"`, `fact` and `citation` null, `searched` listing the five scheme ids and the section titles opened.
 
 Do not add NAV history, a return, a CAGR, a rating, or any sentence that is not in the chosen `text_block`. Stamp duty and the tax rule in the corpus are citable. A performance number is not, even if it is absent on purpose.
 
@@ -303,7 +313,7 @@ The trace fails the test if any agent return is logged before all three starts, 
 
 **Build**
 
-The reviewer runs after the merge. It never starts the three agents. The five checks below are code. Gemini adds a second opinion on `advice` and `performance` (see Decisions); its span must appear in the reply to count.
+The reviewer runs after the merge. It never starts the three agents. The five checks below are code. DeepInfra adds a second opinion on `advice` and `performance` (see Decisions); its span must appear in the reply to count.
 
 | Check | Fail when |
 |---|---|
@@ -382,7 +392,7 @@ If `advice_refusal` is already true, a later "ok but just tell me if large cap i
 `approve(session)` runs only when the caller passes a human-approve flag and `review.status == "pass"`.
 
 1. Append one JSON object to `out/records.jsonl`: redacted complaint, disposition, reply, citation, last-checked date, routing note, pattern signal, `agents_fired`.
-2. Write `out/email_drafts/{session_id}.txt` containing the reply and the citation. No SMTP client, no send function.
+2. Write `out/email_drafts/{session_id}.txt` containing the reply. No SMTP client and no send inside this function. Preview and Send are Phase 11.
 
 `fail` and `blocked` skip both writes. The function raises if something calls it anyway. The record writer scans its payload and raises if a raw PAN, Aadhaar, phone, email, or OTP is present.
 
@@ -390,7 +400,7 @@ If `advice_refusal` is already true, a later "ok but just tell me if large cap i
 
 - A passed Large Cap draft appends one record and one email file. The record contains `[PAN]` when the complaint had a PAN, and does not contain the PAN.
 - A blocked session creates neither file.
-- The email file is the reply text. Nothing in the process sends it.
+- The email file is the reply text. `approve()` does not send it.
 
 ---
 
@@ -424,14 +434,48 @@ A script, `python -m support_reply.accept`, that runs the checks below and exits
 
 ---
 
+## Phase 11 — Streamlit desk, mail preview, MCP send
+
+**Build**
+
+`streamlit_app.py` (layout from `.stitch/designs` intake + result):
+
+1. **Intake:** paste complaint, **Run** → `handle_complaint`.
+2. **Result:** customer Reply + Internal routing. Internal is captioned as not emailed.
+3. **Approve:** `gate.approve` when reviewer `pass`. Writes `out/`. Disabled when `blocked`.
+4. **Preview mail** dialog after Approve: To editable (`MAIL_TO`), subject `Support reply · {disposition}`, body = approved reply. Send uses the MCP Gmail workspace account.
+5. **Send:** `mail.send_preview` → MCP `reflect_content` then `send_email`. `MCP_SERVER_URL` from `.env` (local `http://127.0.0.1:8080/mcp`).
+
+**Exit**
+
+- Approve without Preview writes files and does not call MCP.
+- Preview without Send writes nothing extra.
+- Send with empty To raises `MailError`.
+- `tests/test_mail.py` and `tests/test_mcp.py` cover preview/send with a fake tool client.
+
+Run: `streamlit run streamlit_app.py` from the repo root (venv).
+
+---
+
+## Phase 12 — Evals
+
+**Build**
+
+`docs/edgecases.md`, `docs/evals.md`, `evals/cases.json`, `python -m support_reply.evals`. Cue path only (`DEEPINFRA_API_KEY` cleared). Includes Gold FoF alleged 2% exit load (quote 1% / 15 days, escalate, do not confirm 2%).
+
+**Exit**
+
+- `pytest tests/test_evals.py` and `python -m support_reply.evals` all pass offline.
+
+---
+
 ## What this plan leaves out
 
-- Sending mail, or any client that could send it.
+- Auto-send on Approve, or SMTP inside `gate.py`.
 - Schemes beyond the five parsed files, and any fetch of Groww pages. Last-checked stays `nav_date`.
 - A single model call that answers facts, pattern, and compliance together.
 - A model that writes the fact sentence, the review count, the signal, or the user-facing reply. Those stay on the code step of the node, or on the draft template.
 - Keeping the raw complaint in memory after ingress returns, including "redact later" in a downstream log.
-- A UI. The CLI and the trace are enough to show the fan-out, the one rework, the five refinements, and the gate. A later interface can call the same session API.
 
 ## Suggested build schedule
 
@@ -444,5 +488,7 @@ A script, `python -m support_reply.accept`, that runs the checks below and exits
 | 6 | LangGraph: three agent nodes, then draft | 1, 5 |
 | 7 | Reviewer, one rewrite | 6 |
 | 8 | Refinement and sticky refusal | 7 |
-| 9 | Approve, record, email draft | 8 |
+| 9 | Approve, record, local email file | 8 |
 | 10 | 20 reviews, four branches, advice thread | 9 |
+| 11 | Streamlit desk, Preview mail, MCP Send | 9 |
+| 12 | Edge-case evals | 2, 10 |

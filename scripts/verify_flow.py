@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Run one complaint through the full support-reply graph with live model calls.
 
-Facts, Pattern, and Compliance each make one Groq call. The reviewer makes one
-Gemini call. Code still copies the fact, counts the reviews, writes the draft,
-and decides the review. Nothing is approved or emailed.
+Facts, Pattern, Compliance, and the reviewer each make one DeepInfra call. Code
+still copies the fact, counts the reviews, writes the draft, and decides the
+review. Nothing is approved or emailed.
 
 Usage (from the repo root):
 
     uv run python scripts/verify_flow.py
     uv run python scripts/verify_flow.py "why was I charged an exit load on HDFC gold mutual fund?"
+    uv run python scripts/verify_flow.py --approve
+    uv run python scripts/verify_flow.py --approve "why was I charged an exit load on HDFC gold mutual fund?"
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from support_reply.contracts import Session  # noqa: E402
-from support_reply.gate import approvable  # noqa: E402
+from support_reply.gate import approve, approvable  # noqa: E402
 from support_reply.graph import handle_complaint  # noqa: E402
 from support_reply.llm import (  # noqa: E402
     Classifier,
@@ -106,29 +108,29 @@ class FallbackWatch(logging.Handler):
 
 
 def main(argv: list[str]) -> int:
-    complaint = argv[1] if len(argv) > 1 else DEFAULT_COMPLAINT
-    if len(argv) > 2:
-        print("usage: python scripts/verify_flow.py [complaint]", file=sys.stderr)
-        return 2
-
-    groq = default_classifier()
-    gemini = default_review_classifier()
-    missing = [
-        name
-        for name, client in (("GROQ_API_KEY", groq), ("GEMINI_API_KEY", gemini))
-        if client is None
-    ]
-    if missing or groq is None or gemini is None:
+    args = argv[1:]
+    human_approve = "--approve" in args
+    args = [arg for arg in args if arg != "--approve"]
+    if len(args) > 1:
         print(
-            "Missing "
-            + ", ".join(missing)
-            + ". Put them in .env so this run calls the models instead of the cue tables.",
+            "usage: python scripts/verify_flow.py [--approve] [complaint]",
+            file=sys.stderr,
+        )
+        return 2
+    complaint = args[0] if args else DEFAULT_COMPLAINT
+
+    agents_model = default_classifier()
+    review_model = default_review_classifier()
+    if agents_model is None or review_model is None:
+        print(
+            "Missing DEEPINFRA_API_KEY. Put it in .env so this run calls DeepInfra "
+            "instead of the cue tables.",
             file=sys.stderr,
         )
         return 1
 
-    agents = RecordingClassifier(groq, "groq")
-    reviewer = RecordingClassifier(gemini, "gemini")
+    agents = RecordingClassifier(agents_model, "deepinfra")
+    reviewer = RecordingClassifier(review_model, "deepinfra")
     watch = FallbackWatch()
     logging.getLogger("support_reply.llm").addHandler(watch)
 
@@ -141,7 +143,15 @@ def main(argv: list[str]) -> int:
         trace=trace,
     )
 
-    _print_report(complaint, agents, reviewer, trace, session, watch.messages)
+    _print_report(
+        complaint,
+        agents,
+        reviewer,
+        trace,
+        session,
+        watch.messages,
+        will_approve=human_approve,
+    )
     if watch.messages or any(call["error"] for call in agents.calls + reviewer.calls):
         return 1
     if trace.violations():
@@ -149,8 +159,19 @@ def main(argv: list[str]) -> int:
     expected = {"facts", "pattern", "compliance"}
     seen = {call["task"] for call in agents.calls if call["error"] is None}
     if seen != expected or not any(call["task"] == "review" for call in reviewer.calls):
-        print("Expected one Groq call each for facts, pattern, and compliance, and one Gemini review call.")
+        print("Expected one DeepInfra call each for facts, pattern, and compliance, and one DeepInfra review call.")
         return 1
+    if human_approve:
+        approval = approve(session, human_approved=True)
+        print()
+        print("Human approve")
+        print(f"  session_id: {approval.session_id}")
+        print(f"  record:     {approval.record_path}")
+        print(f"  email:      {approval.email_path}")
+        print("  sent:       no — approve writes a local draft file only")
+        print()
+        print("Email draft file")
+        print(f"  {approval.email_path.read_text(encoding='utf-8')}")
     return 0
 
 
@@ -161,6 +182,8 @@ def _print_report(
     trace: Trace,
     session: Session,
     fallbacks: list[str],
+    *,
+    will_approve: bool = False,
 ) -> None:
     print("Complaint")
     print(f"  {complaint}")
@@ -192,7 +215,8 @@ def _print_report(
     print()
     print("Approval gate")
     print(f"  approvable: {approvable(session)}")
-    print("  approved: no — this script does not click approve, so nothing is appended or emailed")
+    if not will_approve:
+        print("  approved: no — pass --approve to write the record and email draft file")
 
 
 if __name__ == "__main__":

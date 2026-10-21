@@ -1,4 +1,4 @@
-"""Groq classifier: JSON in, redacted text only, no call when the key is unset."""
+"""DeepInfra classifier: JSON in, redacted text only, no call when the key is unset."""
 
 import json
 from types import SimpleNamespace
@@ -6,13 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from support_reply.llm import (
-    DEFAULT_GROQ_MODEL,
-    GROQ_MAX_COMPLETION_TOKENS,
-    GROQ_REASONING_EFFORT,
-    GroqClassifier,
+    DEFAULT_DEEPINFRA_MODEL,
+    DeepInfraClassifier,
     _apply_env_lines,
     classify_or_none,
     default_classifier,
+    default_review_classifier,
     instructions,
     match_allowed,
     parse_json_object,
@@ -26,40 +25,53 @@ class _Completions:
 
     def create(self, **kwargs):
         self.kwargs = kwargs
-        message = SimpleNamespace(content=self.content)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=self.content))]
+        )
 
 
 class _Client:
     def __init__(self, content: str) -> None:
-        self.completions = _Completions(content)
-        self.chat = SimpleNamespace(completions=self.completions)
+        self.chat = SimpleNamespace(completions=_Completions(content))
 
 
 def test_default_classifier_is_none_without_a_key():
     assert default_classifier() is None
+    assert default_review_classifier() is None
 
 
-def test_default_classifier_uses_groq_when_a_key_is_set(monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    monkeypatch.delenv("GROQ_MODEL", raising=False)
+def test_a_deepinfra_key_configures_agents_and_the_reviewer(monkeypatch):
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
+    monkeypatch.delenv("DEEPINFRA_MODEL", raising=False)
+    monkeypatch.delenv("DEEPINFRA_REVIEW_MODEL", raising=False)
 
-    classifier = default_classifier()
+    agents = default_classifier()
+    review = default_review_classifier()
 
-    assert isinstance(classifier, GroqClassifier)
-    assert classifier.model == DEFAULT_GROQ_MODEL
-
-
-def test_groq_model_name_can_be_overridden(monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-20b")
-
-    assert default_classifier().model == "openai/gpt-oss-20b"
+    assert isinstance(agents, DeepInfraClassifier)
+    assert isinstance(review, DeepInfraClassifier)
+    assert agents.model == DEFAULT_DEEPINFRA_MODEL == "deepseek-ai/DeepSeek-V4-Flash-0731"
+    assert review.model == DEFAULT_DEEPINFRA_MODEL
 
 
-def test_groq_sends_the_redacted_complaint_and_asks_for_json():
+def test_deepinfra_model_name_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
+    monkeypatch.setenv("DEEPINFRA_MODEL", "zai-org/GLM-5.3-Flash")
+    monkeypatch.delenv("DEEPINFRA_REVIEW_MODEL", raising=False)
+
+    assert default_classifier().model == "zai-org/GLM-5.3-Flash"
+    assert default_review_classifier().model == "zai-org/GLM-5.3-Flash"
+
+    monkeypatch.setenv("DEEPINFRA_REVIEW_MODEL", "deepseek-ai/DeepSeek-V4-Flash-0731")
+    assert default_classifier().model == "zai-org/GLM-5.3-Flash"
+    assert default_review_classifier().model == "deepseek-ai/DeepSeek-V4-Flash-0731"
+
+
+def test_deepinfra_sends_the_redacted_complaint_and_asks_for_json():
     client = _Client('{"theme_id": "fees_brokerage"}')
-    classifier = GroqClassifier(api_key="test-key", model=DEFAULT_GROQ_MODEL, client=client)
+    classifier = DeepInfraClassifier(
+        api_key="test-key", model=DEFAULT_DEEPINFRA_MODEL, client=client
+    )
     complaint = "Why an exit load on HDFC Large Cap? [PAN]"
 
     payload = classifier.classify(
@@ -70,62 +82,44 @@ def test_groq_sends_the_redacted_complaint_and_asks_for_json():
     )
 
     assert payload == {"theme_id": "fees_brokerage"}
-    sent = client.completions.kwargs
-    assert sent["model"] == DEFAULT_GROQ_MODEL
+    sent = client.chat.completions.kwargs
+    assert sent["model"] == DEFAULT_DEEPINFRA_MODEL
     assert sent["temperature"] == 0
-    assert sent["max_completion_tokens"] == GROQ_MAX_COMPLETION_TOKENS
-    assert sent["reasoning_effort"] == GROQ_REASONING_EFFORT
     assert sent["response_format"] == {"type": "json_object"}
     assert sent["messages"][1] == {"role": "user", "content": complaint}
     system = sent["messages"][0]["content"]
+    assert sent["messages"][0]["role"] == "system"
     assert "json" in system.lower()
     assert "fees_brokerage" in system
     assert "Fees & brokerage" in system
     assert complaint not in system
     assert "test-key" not in system
-    assert "test-key" not in sent["messages"][1]["content"]
-
-
-def test_groq_omits_reasoning_effort_for_a_model_that_does_not_support_it():
-    client = _Client('{"theme_id": "other"}')
-    classifier = GroqClassifier(
-        api_key="test-key", model="llama-3.3-70b-versatile", client=client
-    )
-
-    classifier.classify(
-        task="pattern",
-        redacted_text="the app is slow",
-        allowed={"theme_id": ("reliability", "other")},
-    )
-
-    sent = client.completions.kwargs
-    assert sent["max_completion_tokens"] == GROQ_MAX_COMPLETION_TOKENS
-    assert "reasoning_effort" not in sent
 
 
 def test_env_lines_fill_missing_keys_and_skip_blanks():
-    env = {"GROQ_MODEL": "already-set"}
+    env = {"DEEPINFRA_MODEL": "already-set"}
 
     _apply_env_lines(
         [
             "# comment",
-            "GROQ_API_KEY=",
-            "GEMINI_API_KEY=from-file",
-            'export GEMINI_MODEL="gemini-2.5-pro"',
-            "GROQ_MODEL=openai/gpt-oss-20b",
+            "DEEPINFRA_API_KEY=",
+            "DEEPINFRA_API_KEY=from-file",
+            'export DEEPINFRA_REVIEW_MODEL="zai-org/GLM-5.3-Flash"',
+            "DEEPINFRA_MODEL=deepseek-ai/DeepSeek-V4-Flash-0731",
         ],
         env,
     )
 
-    assert "GROQ_API_KEY" not in env
-    assert env["GEMINI_API_KEY"] == "from-file"
-    assert env["GEMINI_MODEL"] == "gemini-2.5-pro"
-    assert env["GROQ_MODEL"] == "already-set"
+    assert env["DEEPINFRA_API_KEY"] == "from-file"
+    assert env["DEEPINFRA_REVIEW_MODEL"] == "zai-org/GLM-5.3-Flash"
+    assert env["DEEPINFRA_MODEL"] == "already-set"
 
 
-def test_groq_rejects_a_message_that_is_not_json():
+def test_deepinfra_rejects_a_message_that_is_not_json():
     client = _Client("not json")
-    classifier = GroqClassifier(api_key="test-key", model=DEFAULT_GROQ_MODEL, client=client)
+    classifier = DeepInfraClassifier(
+        api_key="test-key", model=DEFAULT_DEEPINFRA_MODEL, client=client
+    )
 
     with pytest.raises(ValueError, match="JSON"):
         classifier.classify(
@@ -182,10 +176,12 @@ def test_match_allowed_accepts_case_and_rejects_unknown_ids():
     assert match_allowed(None, allowed) is None
 
 
-def test_groq_response_body_is_parsed_from_json_text():
+def test_deepinfra_response_body_is_parsed_from_json_text():
     body = json.dumps({"flags": ["advice"]})
     client = _Client(body)
-    classifier = GroqClassifier(api_key="test-key", model=DEFAULT_GROQ_MODEL, client=client)
+    classifier = DeepInfraClassifier(
+        api_key="test-key", model=DEFAULT_DEEPINFRA_MODEL, client=client
+    )
 
     assert classifier.classify(
         task="compliance",

@@ -194,8 +194,8 @@ def build_graph(
 ) -> StateGraph:
     """Assemble the uncompiled graph. `compile_graph` is what callers run.
 
-    `classifier` serves the three agent nodes (Groq by default). `review_classifier`
-    serves the reviewer's advice and performance scan (Gemini by default).
+    `classifier` serves the three agent nodes (DeepInfra by default). `review_classifier`
+    serves the reviewer's advice and performance scan (DeepInfra by default).
     """
     facts_graph = facts.compile_graph(classifier=classifier)
     pattern_graph = pattern.compile_graph(classifier=classifier)

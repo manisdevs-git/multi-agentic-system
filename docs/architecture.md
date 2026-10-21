@@ -1,8 +1,8 @@
 # Architecture: Groww Multi-Agent Support Reply System
 
-This document turns `docs/problemStatement.md` into a buildable design. It names each component, what it may read, the structured outputs it must return, and how a complaint moves from input to an approval-gated email draft.
+This document turns `docs/problemStatement.md` into a buildable design. It names each component, what it may read, the structured outputs it must return, and how a complaint moves from input to an approval-gated mail send.
 
-The system drafts a support reply for a Groww user question. It does not send email, give investment advice, or answer from anything outside `data/`.
+The system drafts a support reply for a Groww user question. It does not give investment advice or answer from anything outside `data/`. **Approve does not send.** After Approve, the Streamlit desk opens **Preview mail**; **Send** is a second click that calls the local MCP Gmail/Docs tools.
 
 ## Constraints that shape the design
 
@@ -15,7 +15,7 @@ These rules come from the problem statement and decide the shape below.
 5. Facts come only from `data/parsed/`. No match means `"not covered"`, not a guess.
 6. A reply is at most **three sentences**, facts-only, with one citation link and a last-checked date. No citation means it does not ship.
 7. Reviewer rework is **one round**. Human refinement is **five rounds**. After a second reviewer failure, the draft is shown with the flag and **Send is not offered**.
-8. Nothing is appended or emailed until a human clicks **approve**. There is no auto-send.
+8. Nothing is appended until a human clicks **Approve**. Nothing is emailed until that human then clicks **Preview mail** and **Send**. There is no auto-send from Approve.
 
 ## System context
 
@@ -29,11 +29,15 @@ flowchart LR
   Pattern[Pattern Agent]
   Compliance[Compliance Agent]
   Reviewer[Reviewer]
+  Desk[Streamlit desk]
   Gate[Approval gate]
+  Preview[Mail preview]
+  MCP[MCP send_email / reflect_content]
   Doc[Support record]
-  Mail[Email draft]
+  DraftFile[Local email draft file]
 
-  UserMsg --> Orch
+  UserMsg --> Desk
+  Desk --> Orch
   Orch -->|1. redact| Ingress
   Orch -->|2. start together| Facts
   Orch -->|2. start together| Pattern
@@ -42,12 +46,15 @@ flowchart LR
   Pattern -->|result| Orch
   Compliance -->|result| Orch
   Orch -->|3. draft| Reviewer
-  Reviewer -->|pass| Human
+  Reviewer -->|pass| Desk
   Reviewer -->|fail once| Orch
   Human -->|refine, max 5| Orch
-  Human -->|approve| Gate
+  Human -->|Approve| Gate
   Gate --> Doc
-  Gate --> Mail
+  Gate --> DraftFile
+  Gate --> Preview
+  Human -->|Preview mail| Preview
+  Preview -->|Send| MCP
 ```
 
 | Store | Role | Who reads it |
@@ -55,8 +62,9 @@ flowchart LR
 | `data/parsed/*.json` plus `parse_manifest.json` | Milestone 1 corpus. Five HDFC schemes, seven sections each. `source_url` is the only legal citation. | Facts Agent |
 | `data/analyzed_themes.json` | Milestone 2 themes: `allThemes` and `topThemes`. | Pattern Agent |
 | `data/normalized_reviews.json` | 1,650 reviews, 2026-04-12 to 2026-07-04. Used to count a theme inside a time slice. | Pattern Agent |
-| Session state | Redacted message, agent outputs, draft, reviewer flags, agents fired, refinement count. | Orchestrator, reviewer, approval gate |
-| Support record and email draft | Written only after approval. | Approval gate |
+| Session state | Redacted message, agent outputs, draft, reviewer flags, agents fired, refinement count. | Orchestrator, reviewer, approval gate, desk |
+| `out/records.jsonl` and `out/email_drafts/` | Written only after Approve. | Approval gate |
+| Mail preview / MCP | Shown after Approve. Send uses `send_email` and optional `reflect_content`. | `mail.py` via Streamlit |
 
 Agents do not scrape Groww or fetch new scheme pages. The model inside a node may return an id from that node's allowed list. The fact text, the citation, the count, and the signal come from the files above.
 
@@ -119,7 +127,7 @@ Each agent node is itself a small graph. Its first step calls the model. The lat
 
 The model sees the redacted complaint and the allowed ids for its node. It does not see another agent's result or the draft.
 
-The configured model is Groq (`GROQ_API_KEY`, optional `GROQ_MODEL`). With no key, or when the Groq call fails, the same node runs the cue tables and returns the same contract. The acceptance run uses that path and does not open a network connection.
+The configured model is DeepInfra (`DEEPINFRA_API_KEY`, optional `DEEPINFRA_MODEL`, default `deepseek-ai/DeepSeek-V4-Flash-0731`) for Facts, Pattern, Compliance, and the reviewer. With no key, or when the call fails, the same node runs the cue tables and returns the same contract. The acceptance run uses that path and does not open a network connection.
 
 A reviewer failure follows the rewrite edge. That edge does not re-enter Facts, Pattern, or Compliance. A human refinement re-enters only the node the pushback names.
 
@@ -131,7 +139,8 @@ Complaint: *"Why was I charged an exit load on HDFC Large Cap Fund?"*
 2. The graph starts the **Facts**, **Pattern**, and **Compliance** nodes together, each with the same redacted text. The Facts model returns `large_cap` and `Exit load`. Code copies *"Exit load of 1% if redeemed within 1 year"* with `https://groww.in/mutual-funds/hdfc-large-cap-fund-direct-growth` and last-checked `25-Jun-2026`. The Pattern model returns `fees_brokerage`. Code counts 136 reviews (avg rating 2.2) over 2026-04-12 to 2026-07-04 and labels the signal recurring or rising from the date split below. The Compliance model returns no advice and no performance flag, and the PII scan is empty. All three results come back on the graph state.
 3. The **orchestrator** writes at most three sentences stating the cited exit-load rule and the last-checked date, plus a routing note to the fees team. If the pattern signal is recurring or rising, the note says the ticket stays open because the same issue is already showing up across reviews. It does not close the ticket just because the fact was easy.
 4. The orchestrator **sends that draft to the reviewer**. The reviewer checks citation, advice, PII, and length. On pass, the human sees the draft and the routing note.
-5. **Approve** appends a redacted record and creates an email draft. Nothing is sent.
+5. **Approve** appends a redacted record and writes `out/email_drafts/{id}.txt`. Nothing is emailed yet.
+6. **Preview mail** shows To, subject, and the customer body. **Send** calls MCP (`reflect_content` for the ticket doc, `send_email` for Gmail from the workspace account). Internal routing is not in the customer body.
 
 ## Components
 
@@ -174,7 +183,9 @@ Sections available in every file: Key fund facts, Exit load, Benchmark, Investme
 
 **Covered** means the scheme is one of the five **and** a section states the fact. The answer text is taken from that `text_block`. The citation is that file's `source_url`. Exactly one link. `last_checked` is the file's `nav_date` (`25-Jun-2026`).
 
-**Not covered** means a different scheme, a different AMC, an app bug, an order, a withdrawal, a login failure, or any question the seven sections do not answer. The agent returns `status: "not_covered"` and lists the schemes and section titles it searched. It does not fill the gap from general knowledge, and it does not cite a URL that is not one of the five `source_url`s.
+**Not covered** means a different scheme, two of the five schemes in one complaint, a different AMC (including Nippon/SBI/… named next to HDFC), NAV history, an app bug, an order, a withdrawal, a login failure, or any question the seven sections do not answer. The agent returns `status: "not_covered"` and lists the schemes and section titles it searched. It does not fill the gap from general knowledge, and it does not cite a URL that is not one of the five `source_url`s.
+
+An alleged fee that is not in the cited block (Gold FoF “2% exit load”) is still **covered** for the SID sentence (1% within 15 days). The reply must not confirm 2%. Pattern still escalates `fees_brokerage`.
 
 NAV, expense ratio, exit load, stamp duty, and the tax rule in the corpus are citable facts. A past or expected **return**, a performance comparison, or a rating of the scheme is not an answer this agent may add, even if a model "knows" it. Those sentences are absent from the corpus on purpose.
 
@@ -322,16 +333,38 @@ On the sixth pushback, the session stops accepting refinement and keeps the last
 
 ### Approval gate
 
-Same gate as Milestone 2. The human click is the only trigger.
+Same gate as Milestone 2. The Approve click is the only trigger that writes files. It does not call Gmail.
 
-On approve, and only when the reviewer status is `pass`:
+On Approve, and only when the reviewer status is `pass`:
 
-1. Append one redacted record: complaint tokens, disposition, reply draft, citation, last-checked date, routing note, pattern signal, and `agents_fired`.
-2. Create an email draft with that reply. Do not send it.
+1. Append one redacted record to `out/records.jsonl`: complaint tokens, disposition, reply draft, citation, last-checked date, routing note, pattern signal, and `agents_fired`.
+2. Write `out/email_drafts/{session_id}.txt` with the customer reply. No SMTP inside `approve()`.
 
-If the reviewer status is `blocked`, the approve action is absent. The gate refuses a programmatic approve in that state as well.
+If the reviewer status is `blocked`, Approve is disabled. The gate refuses a programmatic approve in that state as well.
 
-The record and the email body use the redacted complaint. Raw PII never lands in the doc.
+The record and the email body use the redacted complaint. Raw PII never lands in the files.
+
+### Streamlit desk
+
+`streamlit_app.py` is the support UI (Stitch intake + result: Inter, `#faf8ff`, primary `#00d09c`).
+
+| Screen | What the agent does |
+|---|---|
+| Intake | Paste the complaint, **Run**. The graph starts Facts, Pattern, and Compliance together. |
+| Result | Customer **Reply** (≤3 sentences) and **Internal** routing (not emailed). Trace is collapsed. |
+| Approve | Enabled only on reviewer `pass`. Saves the record and local draft file. |
+| Preview mail | Dialog after Approve: editable To (`MAIL_TO` or `investor.support@groww.in`), subject, body. Cancel or **Send**. Gmail is the MCP workspace account. |
+| Send | `mail.send_preview`: Google Doc via `reflect_content` (reply plus internal note), then Gmail via `send_email`. From on the form is not a Gmail header; the workspace account sends. |
+
+Blocked drafts show the flag and do not offer Approve, Preview, or Send.
+
+### Mail and MCP
+
+`support_reply.mail` composes the preview from the **approved** reply. `support_reply.mcp` is a JSON-RPC client to `MCP_SERVER_URL` (default `http://127.0.0.1:8080/mcp`, local manismcpserver). Cloud Run at scale-to-zero often returns 503; Send is meant for the local MCP host.
+
+### Evals
+
+Offline cue-path cases: `docs/edgecases.md`, `docs/evals.md`, `evals/cases.json`, `python -m support_reply.evals`. Not a live DeepInfra board.
 
 ## Data contracts
 
@@ -443,8 +476,10 @@ flowchart TD
   Rev -->|pass| Human{Human}
   Human -->|refine, under 5| Route[Orchestrator starts only the affected agents]
   Route --> Merge
-  Human -->|approve| MCP[Append redacted record and create email draft]
-  MCP --> Stop[No send]
+  Human -->|Approve| Gate[Append record + local email file]
+  Gate --> Preview[Preview mail]
+  Preview -->|Send| MCP[MCP reflect_content + send_email]
+  Preview -->|Cancel| Gate
 ```
 
 ### Sequence diagram
@@ -462,11 +497,13 @@ sequenceDiagram
   participant Compliance as Compliance Agent
   participant Orch as Orchestrator
   participant Reviewer as Reviewer
-  participant Gate as Approval gate (MCP)
+  participant Gate as Approval gate
+  participant Preview as Mail preview
+  participant MCP as MCP (Docs + Gmail)
   participant Corpus as data/parsed/
   participant Themes as analyzed_themes.json + normalized_reviews.json
   participant Doc as Support record
-  participant Mail as Email draft
+  participant Mail as Local email draft file
 
   User->>Orch: Question or complaint (raw text)
   Orch->>Ingress: Raw text
@@ -540,9 +577,16 @@ sequenceDiagram
 
   Human->>Gate: Click Approve
   Gate->>Gate: Require reviewer status = pass
-  Gate->>Doc: Append redacted record<br/>(complaint tokens, disposition, reply, citation,<br/>last checked, routing note, signal, agents_fired)
-  Gate->>Mail: Create email draft with the reply
-  Note over Gate,Mail: No auto-send. A human sends, or nobody does.
+  Gate->>Doc: Append redacted record
+  Gate->>Mail: Write out/email_drafts/{id}.txt
+  Note over Gate,Mail: Approve does not call Gmail.
+  Human->>Preview: Preview mail (From, To, subject, body)
+  alt Send
+    Preview->>MCP: reflect_content (ticket doc)
+    Preview->>MCP: send_email (customer reply only)
+  else Cancel
+    Preview-->>Human: Draft files stay; nothing emailed
+  end
 ```
 
 Reading notes:
@@ -575,11 +619,12 @@ Ask whether to redeem, whether a scheme is good, and what returns to expect. The
 | Advice resistance | `advice_refusal` is session-sticky. Orchestrator disposition `refuse` cannot be overwritten by a covered fact. |
 | Parallel agents | The LangGraph trace shows the Facts, Pattern, and Compliance nodes started before any of them has returned, then the reviewer node only after the merge. |
 | One reviewer round, five refinements | Enforced in session state, not by prompt wording. |
-| Approval gate | Append and email-draft creation are unreachable unless reviewer status is `pass` and the human approved. |
+| Approval gate | Record and local draft file are unreachable unless reviewer status is `pass` and the human approved. |
+| Preview and Send | After Approve only. MCP send is a second explicit click. |
 
 ## Out of scope
 
-- Sending the email.
+- Auto-send on Approve, or SMTP inside `gate.approve`.
 - Adding schemes beyond the five parsed files.
 - Re-fetching Groww pages. `fetched_at` on the corpus is 2026-06-28; last-checked stays `nav_date`.
 - Letting one model answer facts, pattern, and compliance in a single call.

@@ -1,7 +1,7 @@
 """Compliance Agent. Reads the redacted complaint and the ingress `pii_types` only.
 
 LangGraph subgraph: the model flags advice and performance, then code rescans PII.
-Groq classifies when `GROQ_API_KEY` is set. With no key, or when the call fails,
+DeepInfra classifies when `DEEPINFRA_API_KEY` is set. With no key, or when the call fails,
 the cue table supplies those two flags. A `pii` flag from the model is ignored.
 It does not read Facts or Pattern output and it does not see the draft; the
 reviewer applies the same policy to the draft after the orchestrator writes it.

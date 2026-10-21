@@ -7,3 +7,5 @@ __pycache__/
 *.egg-info/
 out/
 .env
+.cursor/
+.stitch/

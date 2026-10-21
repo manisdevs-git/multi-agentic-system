@@ -16,7 +16,7 @@ Orchestrator - Two outputs. A reply draft of three sentences or fewer, facts-onl
 When the agents disagree, say Facts has a clean answer but Pattern shows forty people asking the same thing this week, the orchestrator says so rather than sending the reply and closing the ticket.
 Reviewer - Checks the draft before a human sees it. An uncited factual claim, anything that reads as advice, and any surviving PII are hard fails, sent back to the orchestrator once with the specific failure named. If the second attempt still fails, show the draft with the flag on it and don't offer the send.
 Refinement - The human pushes back and only the affected agents re-run. "Shorter" touches the orchestrator. "They're asking about a different scheme" touches Facts. "Check if this is the fee issue from last week" touches Pattern. Log which agents fired.
-Approval-gated MCP - Same gate as Milestone 2. Nothing moves without a human clicking approve. After approval, append the record to your doc and create the email draft. No auto-send.
+Approval-gated MCP - Same gate as Milestone 2. Nothing is written without a human clicking approve. After approve: append the record and create the email draft. Streamlit then Preview mail → Send (MCP). No auto-send from approve. The maintained spec is docs/problemStatement.md.
 Rules
 Facts-only. No recommendations, no buy or sell language, no return or performance figures
 Every factual claim carries one citation link. No link means it doesn't ship

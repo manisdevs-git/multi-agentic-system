@@ -1,7 +1,7 @@
 """Phase 7 exit: the five reviewer checks, one template rework, blocked, and the gate.
 
 The reviewer is reached directly for the check-level cases and through the compiled
-graph for the rework. Gemini is a fake here; the offline path is the code checks.
+graph for the rework. DeepInfra is a fake here; the offline path is the code checks.
 """
 
 import json
@@ -27,9 +27,9 @@ from support_reply.facts import answer as facts_answer
 from support_reply.gate import ApprovalRefused, approvable, require_approvable
 from support_reply.graph import REWRITE_NODE, handle_complaint
 from support_reply.llm import (
-    DEFAULT_GEMINI_MODEL,
+    DEFAULT_DEEPINFRA_MODEL,
     TASK_REVIEW,
-    GeminiClassifier,
+    DeepInfraClassifier,
     default_classifier,
     default_for,
     default_review_classifier,
@@ -334,52 +334,65 @@ def test_review_validates_its_arguments():
         check(good, facts=facts, record="record")  # type: ignore[arg-type]
 
 
-# --- Gemini second opinion --------------------------------------------------------------
+# --- DeepInfra second opinion --------------------------------------------------------------
 
 
-def test_default_review_classifier_is_gemini_only_with_a_key(monkeypatch):
+def test_default_review_classifier_is_deepinfra_only_with_a_key(monkeypatch):
     assert default_review_classifier() is None
     assert default_for(TASK_REVIEW) is None
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
     classifier = default_review_classifier()
-    assert isinstance(classifier, GeminiClassifier)
-    assert classifier.model == DEFAULT_GEMINI_MODEL
-    assert isinstance(default_for(TASK_REVIEW), GeminiClassifier)
-    # The agents keep Groq; a Gemini key alone configures nothing for them.
-    assert default_classifier() is None and default_for("facts") is None
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
-    assert default_review_classifier().model == "gemini-2.5-pro"
+    assert isinstance(classifier, DeepInfraClassifier)
+    assert classifier.model == DEFAULT_DEEPINFRA_MODEL
+    assert isinstance(default_for(TASK_REVIEW), DeepInfraClassifier)
+    assert isinstance(default_classifier(), DeepInfraClassifier)
+    assert default_for("facts").model == DEFAULT_DEEPINFRA_MODEL
+    monkeypatch.setenv("DEEPINFRA_MODEL", "zai-org/GLM-5.3-Flash")
+    assert default_review_classifier().model == "zai-org/GLM-5.3-Flash"
 
 
-def test_gemini_sends_the_draft_as_content_and_the_rules_as_system_instruction():
-    class _Models:
+def test_deepinfra_sends_the_draft_as_user_content_and_the_rules_as_system():
+    class _Completions:
         def __init__(self):
             self.kwargs = None
 
-        def generate_content(self, **kwargs):
+        def create(self, **kwargs):
             self.kwargs = kwargs
-            return SimpleNamespace(text='{"failures": [{"check": "advice", "span": "stay invested"}]}')
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"failures": [{"check": "advice", "span": "stay invested"}]}'
+                        )
+                    )
+                ]
+            )
 
-    client = SimpleNamespace(models=_Models())
-    classifier = GeminiClassifier(api_key="test-key", model=DEFAULT_GEMINI_MODEL, client=client)
+    completions = _Completions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    classifier = DeepInfraClassifier(
+        api_key="test-key", model=DEFAULT_DEEPINFRA_MODEL, client=client
+    )
     reply = f"{EXIT_LOAD_FACT}. {ADVICE} Source: {LARGE_CAP_URL}"
 
     payload = classifier.classify(task=TASK_REVIEW, redacted_text=reply, allowed={"check": ("advice", "performance")})
 
     assert payload == {"failures": [{"check": "advice", "span": "stay invested"}]}
-    sent = client.models.kwargs
-    assert sent["model"] == DEFAULT_GEMINI_MODEL
-    assert sent["contents"] == reply
-    assert sent["config"]["response_mime_type"] == "application/json"
-    assert sent["config"]["temperature"] == 0
-    system = sent["config"]["system_instruction"]
+    sent = completions.kwargs
+    assert sent["model"] == DEFAULT_DEEPINFRA_MODEL
+    assert sent["messages"][1] == {"role": "user", "content": reply}
+    assert sent["response_format"] == {"type": "json_object"}
+    assert sent["temperature"] == 0
+    system = sent["messages"][0]["content"]
     assert system == instructions(TASK_REVIEW, {"check": ("advice", "performance")})
     assert "advice" in system and "performance" in system and "span" in system
     assert reply not in system and "test-key" not in system
 
     with pytest.raises(ValueError):
-        GeminiClassifier(api_key=" ", model=DEFAULT_GEMINI_MODEL, client=client)
-    client.models.generate_content = lambda **kwargs: SimpleNamespace(text="")
+        DeepInfraClassifier(api_key=" ", model=DEFAULT_DEEPINFRA_MODEL, client=client)
+    completions.create = lambda **kwargs: SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=""))]
+    )
     with pytest.raises(ValueError):
         classifier.classify(task=TASK_REVIEW, redacted_text=reply, allowed={"check": ("advice",)})
 

@@ -2,8 +2,8 @@
 
 Five checks, in this order: `citation`, `advice`, `performance`, `pii`, `shape`.
 Each is plain code over the draft, the routing note, and the session record, with
-the `FactsResult` the draft was built from as the only reference. Gemini adds a
-second opinion on `advice` and `performance` when `GEMINI_API_KEY` is set; a model
+the `FactsResult` the draft was built from as the only reference. DeepInfra adds a
+second opinion on `advice` and `performance` when `DEEPINFRA_API_KEY` is set; a model
 finding counts only when the span it quotes is really in the reply, and never for
 a figure that Facts copied from the cited text block. Citation, PII, and shape stay
 code-only: a model must not be the last line that catches a raw value or a second
@@ -149,7 +149,7 @@ def review(
 
     `record` is the session record that would be stored with this draft. It is
     scanned for raw PII along with the reply and the routing note. `classifier`
-    overrides the Gemini default for the advice and performance scan.
+    overrides the DeepInfra default for the advice and performance scan.
     """
     if round_number not in (1, 2):
         raise ValueError("review round is 1 or 2")
@@ -327,7 +327,7 @@ def factual_claims(reply: str) -> list[str]:
 def _model_findings(
     draft: Draft, facts: FactsResult, classifier: Classifier | None
 ) -> list[tuple[str, str]]:
-    """Gemini's advice and performance findings, kept only when grounded in the reply."""
+    """DeepInfra's advice and performance findings, kept only when grounded in the reply."""
     payload = classify_or_none(
         task=TASK_REVIEW,
         redacted_text=draft.reply,
